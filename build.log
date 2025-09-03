@@ -1,0 +1,122 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 3.56kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/ubuntu:22.04
+#2 DONE 0.5s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [build 1/9] FROM docker.io/library/ubuntu:22.04@sha256:1aa979d85661c488ce030ac292876cf6ed04535d3a237e49f61542d8e5de5ae0
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 6.31kB done
+#5 DONE 0.0s
+
+#6 [build 4/9] RUN /opt/vcpkg/vcpkg install --triplet=x64-linux     boost-system     boost-url     boost-beast     boost-asio     openssl     nlohmann-json     shaderc     vulkan-headers
+#6 CACHED
+
+#7 [build 3/9] RUN git clone --depth=1 https://github.com/microsoft/vcpkg.git /opt/vcpkg  && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+#7 CACHED
+
+#8 [build 2/9] RUN apt-get update && apt-get install -y --no-install-recommends     build-essential cmake git curl unzip zip tar pkg-config ninja-build ca-certificates     python3     libvulkan1 mesa-vulkan-drivers     ocl-icd-opencl-dev     pocl-opencl-icd     && rm -rf /var/lib/apt/lists/*
+#8 CACHED
+
+#9 [build 5/9] WORKDIR /src
+#9 CACHED
+
+#10 [build 6/9] COPY . /src
+#10 DONE 0.1s
+
+#11 [build 7/9] RUN find /opt/vcpkg/installed/x64-linux/share -maxdepth 3 -type f -iname "*shaderc*" -print
+#11 0.647 /opt/vcpkg/installed/x64-linux/share/unofficial-shaderc/unofficial-shaderc-targets-debug.cmake
+#11 0.647 /opt/vcpkg/installed/x64-linux/share/unofficial-shaderc/unofficial-shaderc-config.cmake
+#11 0.647 /opt/vcpkg/installed/x64-linux/share/unofficial-shaderc/unofficial-shaderc-targets.cmake
+#11 0.647 /opt/vcpkg/installed/x64-linux/share/unofficial-shaderc/unofficial-shaderc-targets-release.cmake
+#11 DONE 0.7s
+
+#12 [build 8/9] RUN ls -la /opt/vcpkg/installed/x64-linux/lib | grep -i shaderc || true
+#12 2.955 -rw-r--r-- 2 root root    68934 Aug 31 22:52 libshaderc.a
+#12 2.955 -rw-r--r-- 2 root root   168646 Aug 31 22:52 libshaderc_util.a
+#12 DONE 3.0s
+
+#13 [build 9/9] RUN cmake -S . -B build     -G Ninja     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake     -DVCPKG_TARGET_TRIPLET=x64-linux     -DVulkan_INCLUDE_DIR=/opt/vcpkg/installed/x64-linux/include     -DVulkan_LIBRARY=/lib/x86_64-linux-gnu/libvulkan.so.1     -DOPENCL_INCLUDE_DIR=/usr/include     -DOPENCL_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/libOpenCL.so     -DENABLE_OPENCL=ON     -DENABLE_VULKAN=ON     -DENABLE_CUDA=OFF  && cmake --build build --parallel
+#13 3.426 -- The CXX compiler identification is GNU 11.4.0
+#13 3.431 -- Detecting CXX compiler ABI info
+#13 3.471 -- Detecting CXX compiler ABI info - done
+#13 3.477 -- Check for working CXX compiler: /usr/bin/c++ - skipped
+#13 3.477 -- Detecting CXX compile features
+#13 3.477 -- Detecting CXX compile features - done
+#13 3.479 -- Looking for C++ include pthread.h
+#13 3.523 -- Looking for C++ include pthread.h - found
+#13 3.523 -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+#13 3.568 -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+#13 3.568 -- Found Threads: TRUE  
+#13 3.595 -- Found OpenSSL: /opt/vcpkg/installed/x64-linux/lib/libcrypto.a (found version "3.5.2")  
+#13 3.598 -- Found nlohmann_json: /opt/vcpkg/installed/x64-linux/share/nlohmann_json/nlohmann_jsonConfig.cmake (found version "3.12.0") 
+#13 3.642 -- Found Boost: /opt/vcpkg/installed/x64-linux/share/boost/BoostConfig.cmake (found version "1.88.0") found components: system asio 
+#13 3.710 -- Trying to find shaderc via vcpkg/config (unofficial-shaderc)...
+#13 3.716 -- Linking shaderc via vcpkg config: unofficial::shaderc::shaderc
+#13 3.716 -- Configuring done
+#13 3.719 -- Generating done
+#13 3.721 CMake Warning:
+#13 3.721   Manually-specified variables were not used by the project:
+#13 3.721 
+#13 3.721     OPENCL_INCLUDE_DIR
+#13 3.721     OPENCL_LIBRARY_PATH
+#13 3.721 
+#13 3.721 
+#13 3.721 -- Build files have been written to: /src/build
+#13 4.072 [1/10] Building CXX object CMakeFiles/native_client.dir/src/base64.cpp.o
+#13 5.689 [2/10] Building CXX object CMakeFiles/native_client.dir/src/executors/cuda_executor.cpp.o
+#13 6.192 [3/10] Building CXX object CMakeFiles/native_client.dir/src/executors/binary_executor.cpp.o
+#13 6.798 [4/10] Building CXX object CMakeFiles/native_client.dir/src/executors/opencl_executor.cpp.o
+#13 6.801 In file included from /usr/include/CL/cl.h:20,
+#13 6.801                  from /src/src/executors/opencl_executor.hpp:5,
+#13 6.801                  from /src/src/executors/opencl_executor.cpp:1:
+#13 6.801 /usr/include/CL/cl_version.h:22:104: note: '#pragma message: cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)'
+#13 6.801    22 | #pragma message("cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)")
+#13 6.801       |                                                                                                        ^
+#13 7.020 [5/10] Building CXX object CMakeFiles/native_client.dir/src/executors/vulkan_executor.cpp.o
+#13 8.543 [6/10] Building CXX object CMakeFiles/native_client.dir/src/main.cpp.o
+#13 9.271 [7/10] Building CXX object CMakeFiles/native_client.dir/src/server_client.cpp.o
+#13 18.56 [8/10] Building CXX object CMakeFiles/native_client.dir/src/websocket_client.cpp.o
+#13 19.17 [9/10] Building CXX object CMakeFiles/native_client.dir/src/local_ws_server.cpp.o
+#13 19.17 In file included from /usr/include/CL/cl.h:20,
+#13 19.17                  from /src/src/executors/opencl_executor.hpp:5,
+#13 19.17                  from /src/src/local_ws_server.cpp:4:
+#13 19.17 /usr/include/CL/cl_version.h:22:104: note: '#pragma message: cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)'
+#13 19.17    22 | #pragma message("cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)")
+#13 19.17       |                                                                                                        ^
+#13 19.65 [10/10] Linking CXX executable native_client
+#13 DONE 19.7s
+
+#14 [runtime 2/7] RUN apt-get update && apt-get install -y --no-install-recommends     ca-certificates     libstdc++6     libvulkan1 mesa-vulkan-drivers     ocl-icd-libopencl1 pocl-opencl-icd clinfo     python3     && rm -rf /var/lib/apt/lists/*
+#14 CACHED
+
+#15 [runtime 3/7] COPY --from=build /src/build/native_client /opt/mfc/bin/native_client
+#15 DONE 0.1s
+
+#16 [runtime 4/7] COPY --from=build /opt/vcpkg/installed /opt/vcpkg/installed
+#16 DONE 1.5s
+
+#17 [runtime 5/7] COPY --from=build /src /tmp/src-files
+#17 DONE 0.1s
+
+#18 [runtime 6/7] RUN if [ -f /tmp/src-files/server.crt ]; then cp /tmp/src-files/server.crt /opt/mfc/bin/; chmod 644 /opt/mfc/bin/server.crt; fi &&     if [ -f /tmp/src-files/server.key ]; then cp /tmp/src-files/server.key /opt/mfc/bin/; chmod 600 /opt/mfc/bin/server.key; fi &&     if [ -f /tmp/src-files/generate_cert.sh ]; then cp /tmp/src-files/generate_cert.sh /opt/mfc/bin/; chmod +x /opt/mfc/bin/generate_cert.sh; fi &&     rm -rf /tmp/src-files
+#18 DONE 1.0s
+
+#19 [runtime 7/7] WORKDIR /opt/mfc/bin
+#19 DONE 0.1s
+
+#20 exporting to image
+#20 exporting layers
+#20 exporting layers 2.4s done
+#20 writing image sha256:73612822426bc311f9ce075d44cef1e133117e3ad5cfeeaff85d652ff6598dee done
+#20 naming to docker.io/library/min_native_client done
+#20 DONE 2.4s

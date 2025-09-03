@@ -1,0 +1,36 @@
+
+#pragma once
+#include <boost/beast/core.hpp>
+#include <boost/beast/websocket.hpp>
+#include <boost/beast/websocket/ssl.hpp>
+#include <boost/asio/ssl.hpp>
+#include <nlohmann/json.hpp>
+#include <thread>
+#include <functional>
+
+class WebSocketClient {
+public:
+    using json = nlohmann::json;
+    WebSocketClient(bool insecure=true);
+    ~WebSocketClient();
+
+    bool connect(const std::string& host, const std::string& port, const std::string& target="/ws-native");
+    void disconnect();
+    void send_json(const json& j);
+
+    std::function<void()> onConnected;
+    std::function<void()> onDisconnected;
+    std::function<void(const json&)> onJson;
+
+private:
+    void loop();
+
+    boost::asio::io_context ioc;
+    boost::asio::ssl::context ctx;
+    boost::beast::websocket::stream<
+        boost::beast::ssl_stream<boost::beast::tcp_stream>
+    > ws;
+    std::thread th;
+    bool stop=false;
+    bool insecure_;
+};

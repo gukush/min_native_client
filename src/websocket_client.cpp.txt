@@ -1,0 +1,86 @@
+
+#include "websocket_client.hpp"
+#include <boost/asio/connect.hpp>
+#include <boost/beast/ssl.hpp>
+#include <iostream>
+
+using namespace boost;
+
+WebSocketClient::WebSocketClient(bool insecure)
+: ctx(asio::ssl::context::tls_client)
+, ws(ioc, ctx)
+, insecure_(insecure) {
+    if(insecure_){
+        ctx.set_verify_mode(asio::ssl::verify_none);
+    } else {
+        ctx.set_default_verify_paths();
+    }
+}
+
+WebSocketClient::~WebSocketClient(){
+    disconnect();
+}
+
+bool WebSocketClient::connect(const std::string& host, const std::string& port, const std::string& target){
+    try{
+        asio::ip::tcp::resolver resolver{ioc};
+        auto results = resolver.resolve(host, port);
+        auto ep = asio::connect(beast::get_lowest_layer(ws), results);
+        std::string hostWithPort = host + ":" + std::to_string(ep.port());
+
+        if(!SSL_set_tlsext_host_name(ws.next_layer().native_handle(), host.c_str())){
+            beast::error_code ec{static_cast<int>(::ERR_get_error()), asio::error::get_ssl_category()};
+            throw beast::system_error{ec};
+        }
+        ws.next_layer().handshake(asio::ssl::stream_base::client);
+        ws.set_option(beast::websocket::stream_base::decorator(
+            [](beast::websocket::request_type& req){
+                req.set(beast::http::field::user_agent, "native-client-min/1.0");
+            }
+        ));
+        ws.handshake(hostWithPort, target);
+        stop=false;
+        th=std::thread(&WebSocketClient::loop,this);
+        if(onConnected) onConnected();
+        return true;
+    }catch(std::exception const& e){
+        std::cerr << "WS connect error: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+void WebSocketClient::disconnect(){
+    stop=true;
+    try{ ws.close(beast::websocket::close_code::normal); }catch(...){}
+    if(th.joinable()) th.join();
+    if(onDisconnected) onDisconnected();
+}
+
+void WebSocketClient::send_json(const json& j){
+    try{
+        auto s = j.dump();
+        ws.write(asio::buffer(s));
+    }catch(std::exception const& e){
+        std::cerr << "WS send error: " << e.what() << std::endl;
+    }
+}
+
+void WebSocketClient::loop(){
+    beast::flat_buffer buffer;
+    while(!stop){
+        try{
+            ws.read(buffer);
+            std::string s = beast::buffers_to_string(buffer.cdata());
+            buffer.clear();
+            try{
+                auto j = json::parse(s);
+                if(onJson) onJson(j);
+            }catch(std::exception const& e){
+                std::cerr << "WS json parse error: " << e.what() << std::endl;
+            }
+        }catch(std::exception const& e){
+            if(!stop) std::cerr << "WS read error: " << e.what() << std::endl;
+            break;
+        }
+    }
+}
