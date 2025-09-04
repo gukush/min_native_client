@@ -219,21 +219,21 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                     #else
                         resp = {{"ok",false},{"error","opencl disabled at build time"}};
                     #endif
-                    } else if(framework=="vulkan"){
+                } else if(framework=="vulkan"){
                     #ifdef HAVE_VULKAN
                         VulkanExecutor exec;
                         if(!exec.initialize(nlohmann::json::object())){
                             resp = {{"ok",false},{"error","vulkan init failed"}};
                         } else {
-                            std::cerr << "[local-ws] OpenCL initialized, running task..." << std::endl;
+                            std::cerr << "[local-ws] Vulkan initialized, running task..." << std::endl;  // FIXED
                             auto result = exec.run_task(req);
                             if(result.ok){
-                                std::cerr << "[local-ws] OpenCL task completed successfully" << std::endl;
+                                std::cerr << "[local-ws] Vulkan task completed successfully" << std::endl;  // FIXED
                                 nlohmann::json outs = nlohmann::json::array();
                                 for(auto& o: result.outputs) outs.push_back(base64_encode(o));
                                 resp = {{"ok",true},{"outputs",outs},{"processingTimeMs",result.ms}};
                             } else {
-                                std::cerr << "[local-ws] OpenCL task failed: " << result.error << std::endl;
+                                std::cerr << "[local-ws] Vulkan task failed: " << result.error << std::endl;  // FIXED
                                 resp = {{"ok",false},{"error",result.error}};
                             }
                         }

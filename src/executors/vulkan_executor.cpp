@@ -214,18 +214,28 @@ ExecResult VulkanExecutor::run_task(const json& task){
         for(auto& x: task["outputSizes"]) if(x.is_number_unsigned()) outputSizes.push_back(x.get<size_t>());
     }
 
-    // Uniforms: small uniform buffer
     std::vector<uint8_t> uniformsBuf;
     if(task.contains("uniforms") && task["uniforms"].is_array()){
+        // For std140 layout with uint values:
+        // - Each uint is 4 bytes
+        // - Struct must be 16-byte aligned
+        // - Need padding to reach 16 bytes total
+
+        std::vector<uint32_t> uniforms32;
         for(auto& v: task["uniforms"]){
-            uint64_t u=0;
-            if(v.is_number_unsigned()) u = v.get<uint64_t>();
-            else if(v.is_number_integer()) u = (uint64_t)v.get<long long>();
-            else if(v.is_number_float()){ double d=v.get<double>(); std::memcpy(&u,&d,sizeof(double)); }
-            size_t off = uniformsBuf.size();
-            uniformsBuf.resize(off + sizeof(uint64_t));
-            std::memcpy(uniformsBuf.data()+off, &u, sizeof(uint64_t));
+            uint32_t u=0;
+            if(v.is_number_unsigned()) u = static_cast<uint32_t>(v.get<uint64_t>());
+            else if(v.is_number_integer()) u = static_cast<uint32_t>(v.get<long long>());
+            else if(v.is_number_float()) u = static_cast<uint32_t>(v.get<double>());
+            uniforms32.push_back(u);
         }
+
+        while(uniforms32.size() < 4) {
+            uniforms32.push_back(0); // padding
+        }
+
+        uniformsBuf.resize(uniforms32.size() * sizeof(uint32_t));
+        std::memcpy(uniformsBuf.data(), uniforms32.data(), uniformsBuf.size());
     }
 
     // Create shader module
