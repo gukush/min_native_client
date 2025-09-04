@@ -106,6 +106,7 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
 
 ExecResult CudaExecutor::run_task(const json& task){
     ExecResult r;
+    std::cout << "Task JSON: " << task.dump(2) << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
     std::string src = task.value("source","");
     std::string entry = task.value("entry","main");
