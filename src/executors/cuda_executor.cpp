@@ -39,8 +39,17 @@ bool CudaExecutor::compileNVRTC(const std::string& src, const std::string& entry
     (void)entry;
     nvrtcProgram prog=nullptr;
     if(!checkNVRTC(nvrtcCreateProgram(&prog, src.c_str(), "k.cu", 0, nullptr, nullptr), "nvrtcCreateProgram")) return false;
-    const char* opts[] = {"--std=c++14"};
-    auto r = nvrtcCompileProgram(prog, 1, opts);
+    int major=0, minor=0;
+    {
+        CUdevice dev;
+        if(!check(cuDeviceGet(&dev, devId), "cuDeviceGet")) { nvrtcDestroyProgram(&prog); return false; }
+        if(!check(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev), "cuDeviceGetAttribute(major)")) { nvrtcDestroyProgram(&prog); return false; }
+        if(!check(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev), "cuDeviceGetAttribute(minor)")) { nvrtcDestroyProgram(&prog); return false; }
+    }
+    std::string archOpt = std::string("--gpu-architecture=compute_") + std::to_string(major) + std::to_string(minor);
+    const char* opts[] = {"--std=c++14", archOpt.c_str()};
+    auto r = nvrtcCompileProgram(prog, int(std::size(opts)), opts);
+
     size_t logSize=0; nvrtcGetProgramLogSize(prog, &logSize);
     if(logSize>1){ std::string log; log.resize(logSize); nvrtcGetProgramLog(prog, log.data()); std::cout << log << std::endl; }
     if(!checkNVRTC(r,"nvrtcCompileProgram")){ nvrtcDestroyProgram(&prog); return false; }
@@ -55,13 +64,47 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
                 const std::vector<size_t>& outputSizes,
                 const std::vector<int>& grid, const std::vector<int>& block,
                 std::vector<std::vector<uint8_t>>& outputs){
-    CUcontext prev_ctx = nullptr;
-    check(cuCtxGetCurrent(&prev_ctx), "cuCtxGetCurrent");
-    if(prev_ctx != ctx){
-        if(!check(cuCtxSetCurrent(ctx), "cuCtxSetCurrent")) return false;
-    }
+
+
+    CUcontext pushed = nullptr;
+    if(!check(cuCtxPushCurrent(ctx), "cuCtxPushCurrent")) return false;
+    // Keep track so we reliably pop on all exits.
+    auto pop_ctx = [&](){
+        CUcontext dummy=nullptr;
+        cuCtxPopCurrent(&dummy); // don't check here; we're in cleanup paths often
+    };
+
     CUmodule mod=nullptr; CUfunction fun=nullptr;
-    if(!check(cuModuleLoadDataEx(&mod, ptx.c_str(), 0, nullptr, nullptr), "cuModuleLoadDataEx")) return false;
+
+    // JIT logging buffers to diagnose load failures precisely.
+    char error_log[8192] = {0};
+    char info_log[8192]  = {0};
+    unsigned int err_size = sizeof(error_log);
+    unsigned int inf_size = sizeof(info_log);
+    CUjit_option jit_opts[] = {
+        CU_JIT_ERROR_LOG_BUFFER,
+        CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES,
+        CU_JIT_INFO_LOG_BUFFER,
+        CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES,
+        CU_JIT_LOG_VERBOSE
+    };
+    void*       jit_vals[] = {
+        (void*)error_log,
+        (void*)(uintptr_t)err_size,
+        (void*)info_log,
+        (void*)(uintptr_t)inf_size,
+        (void*)1
+    };
+
+    if(!check(cuModuleLoadDataEx(&mod, ptx.c_str(),
+                                 (unsigned int)(sizeof(jit_opts)/sizeof(jit_opts[0])),
+                                 jit_opts, jit_vals), "cuModuleLoadDataEx")){
+        if (error_log[0]) std::cerr << "[JIT error] " << error_log << std::endl;
+        if (info_log[0])  std::cerr << "[JIT info]  " << info_log  << std::endl;
+        pop_ctx();
+        return false;
+    }
+
     if(!check(cuModuleGetFunction(&fun, mod, entry.c_str()), "cuModuleGetFunction")){ cuModuleUnload(mod); return false; }
 
     // device buffers
@@ -86,7 +129,9 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     dim3 b(block.size()>0?block[0]:1, block.size()>1?block[1]:1, block.size()>2?block[2]:1);
 
     if(!check(cuLaunchKernel(fun, g.x,g.y,g.z, b.x,b.y,b.z, 0, 0, args.data(), nullptr), "cuLaunchKernel")){
-        cuModuleUnload(mod); return false;
+        cuModuleUnload(mod);
+        pop_ctx();
+        return false;
     }
     if(!check(cuCtxSynchronize(), "cuCtxSynchronize")){ cuModuleUnload(mod); return false; }
 
@@ -98,9 +143,7 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     }
     for(auto d: dIn) cuMemFree(d);
     cuModuleUnload(mod);
-    if (prev_ctx != ctx){
-        check(cuCtxSetCurrent(prev_ctx), "cuCtxSetCurrent(restore)");
-    }
+    pop_ctx();
     return true;
 }
 
