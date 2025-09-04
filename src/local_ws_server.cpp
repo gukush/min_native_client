@@ -180,7 +180,10 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                 nlohmann::json resp;
 
                 if(req.is_discarded() || req.value("action","")!="compile_and_run"){
-                    resp = {{"ok",false},{"error","invalid request"}};
+                    resp = nlohmann::json::object();
+                    resp["ok"] = false;
+                    resp["error"] = "invalid request";
+                    //resp = {{"ok",false},{"error","invalid request"}};
                 } else {
                     const std::string framework = req.value("framework","cuda");
 
@@ -193,7 +196,10 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                     if(framework=="cuda"){
                     #ifdef HAVE_CUDA
                         if(!cuda_executor_){
-                            resp = {{"ok",false},{"error","CUDA executor is not available or failed to initialize"}};
+                            resp = nlohmann::json::object();
+                            resp["ok"] = false;
+                            resp["error"] = "CUDA executor is not available or failed to initialize";
+                            //resp = {{"ok",false},{"error","CUDA executor is not available or failed to initialize"}};
                         } else {
                             auto result = cuda_executor_->run_task(req);
                             if(result.ok){
@@ -201,16 +207,25 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                                 resp = make_ok(result);
                             } else {
                                 std::cerr << "[local-ws] CUDA task failed: " << result.error << std::endl;
-                                resp = {{"ok",false},{"error",result.error}};
+                                resp = nlohmann::json::object();
+                                resp["ok"] = false;
+                                resp["error"] = result.error;
+                                //resp = {{"ok",false},{"error",result.error}};
                             }
                         }
                     #else
-                        resp = {{"ok",false},{"error","cuda disabled at build time"}};
+                        resp = nlohmann::json::object();
+                        resp["ok"] = false;
+                        resp["error"] = "cuda disabled at build time";
+                        //resp = {{"ok",false},{"error","cuda disabled at build time"}};
                     #endif
                     } else if(framework=="opencl"){
                     #ifdef HAVE_OPENCL
                         if(!opencl_executor_){
-                            resp = {{"ok",false},{"error","OpenCL executor is not available or failed to initialize"}};
+                            resp = nlohmann::json::object();
+                            resp["ok"] = false;
+                            resp["error"] = "OpenCL executor is not available or failed to initialize";
+                            //resp = {{"ok",false},{"error","OpenCL executor is not available or failed to initialize"}};
                         } else {
                             auto result = opencl_executor_->run_task(req);
                             if(result.ok){
@@ -218,16 +233,25 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                                 resp = make_ok(result);
                             } else {
                                 std::cerr << "[local-ws] OpenCL task failed: " << result.error << std::endl;
-                                resp = {{"ok",false},{"error",result.error}};
+                                resp = nlohmann::json::object();
+                                resp["ok"] = false;
+                                resp["error"] = result.error;
+                                //resp = {{"ok",false},{"error",result.error}};
                             }
                         }
                     #else
-                        resp = {{"ok",false},{"error","opencl disabled at build time"}};
+                        resp = nlohmann::json::object();
+                        resp["ok"] = false;
+                        resp["error"] = "opencl disabled at build time";
+                        //resp = {{"ok",false},{"error","opencl disabled at build time"}};
                     #endif
                     } else if(framework=="vulkan"){
                     #ifdef HAVE_VULKAN
                         if(!vulkan_executor_){
-                            resp = {{"ok",false},{"error","Vulkan executor is not available or failed to initialize"}};
+                            resp = nlohmann::json::object();
+                            resp["ok"] = false;
+                            resp["error"] = "Vulkan executor is not available or failed to initialize";
+                            //resp = {{"ok",false},{"error","Vulkan executor is not available or failed to initialize"}};
                         } else {
                             auto result = vulkan_executor_->run_task(req);
                             if(result.ok){
@@ -235,14 +259,23 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                                 resp = make_ok(result);
                             } else {
                                 std::cerr << "[local-ws] Vulkan task failed: " << result.error << std::endl;
-                                resp = {{"ok",false},{"error",result.error}};
+                                resp = nlohmann::json::object();
+                                resp["ok"] = false;
+                                resp["error"] = result.error;
+                                //resp = {{"ok",false},{"error",result.error}};
                             }
                         }
                     #else
-                        resp = {{"ok",false},{"error","vulkan disabled at build time"}};
+                        resp = nlohmann::json::object();
+                        resp["ok"] = false;
+                        resp["error"] = "vulkan disabled at build time";
+                        //resp = {{"ok",false},{"error","vulkan disabled at build time"}};
                     #endif
                     } else {
-                        resp = {{"ok",false},{"error","framework must be cuda|opencl|vulkan"}};
+                        resp = nlohmann::json::object();
+                        resp["ok"] = false;
+                        resp["error"] = "framework must be cuda|opencl|vulkan";
+                        //resp = {{"ok",false},{"error","framework must be cuda|opencl|vulkan"}};
                     }
                 }
 
@@ -358,7 +391,10 @@ void LocalWSServer::run_plain(const std::string& address, unsigned short port, c
                 nlohmann::json resp;
 
                 if(req.is_discarded() || req.value("action","")!="compile_and_run"){
-                    resp = {{"ok",false},{"error","invalid request"}};
+                    resp = nlohmann::json::object();
+                    resp["ok"] = false;
+                    resp["error"] = "invalid request";
+                    //resp = {{"ok",false},{"error","invalid request"}};
                 } else {
                     const std::string framework = req.value("framework","cuda");
 
@@ -371,7 +407,10 @@ void LocalWSServer::run_plain(const std::string& address, unsigned short port, c
                     if(framework=="cuda"){
                     #ifdef HAVE_CUDA
                         if(!cuda_executor_){
-                            resp = {{"ok",false},{"error","CUDA executor is not available or failed to initialize"}};
+                            resp = nlohmann::json::object();
+                            resp["ok"] = false;
+                            resp["error"] = "CUDA executor is not available or failed to initialize";
+                            //resp = {{"ok",false},{"error","CUDA executor is not available or failed to initialize"}};
                         } else {
                             auto result = cuda_executor_->run_task(req);
                             if(result.ok){
@@ -379,16 +418,25 @@ void LocalWSServer::run_plain(const std::string& address, unsigned short port, c
                                 resp = make_ok(result);
                             } else {
                                 std::cerr << "[local-ws] CUDA task failed: " << result.error << std::endl;
-                                resp = {{"ok",false},{"error",result.error}};
+                                resp = nlohmann::json::object();
+                                resp["ok"] = false;
+                                resp["error"] = result.error;
+                                //resp = {{"ok",false},{"error",result.error}};
                             }
                         }
                     #else
-                        resp = {{"ok",false},{"error","cuda disabled at build time"}};
+                        resp = nlohmann::json::object();
+                        resp["ok"] = false;
+                        resp["error"] = "cuda disabled at build time";
+                        //resp = {{"ok",false},{"error","cuda disabled at build time"}};
                     #endif
                     } else if(framework=="opencl"){
                     #ifdef HAVE_OPENCL
                         if(!opencl_executor_){
-                            resp = {{"ok",false},{"error","OpenCL executor is not available or failed to initialize"}};
+                            resp = nlohmann::json::object();
+                            resp["ok"] = false;
+                            resp["error"] = "OpenCL executor is not available or failed to initialize";
+                            //resp = {{"ok",false},{"error","OpenCL executor is not available or failed to initialize"}};
                         } else {
                             auto result = opencl_executor_->run_task(req);
                             if(result.ok){
@@ -396,16 +444,25 @@ void LocalWSServer::run_plain(const std::string& address, unsigned short port, c
                                 resp = make_ok(result);
                             } else {
                                 std::cerr << "[local-ws] OpenCL task failed: " << result.error << std::endl;
-                                resp = {{"ok",false},{"error",result.error}};
+                                resp = nlohmann::json::object();
+                                resp["ok"] = false;
+                                resp["error"] = result.error;
+                                //resp = {{"ok",false},{"error",result.error}};
                             }
                         }
                     #else
-                        resp = {{"ok",false},{"error","opencl disabled at build time"}};
+                        resp = nlohmann::json::object();
+                        resp["ok"] = false;
+                        resp["error"] = "opencl disabled at build time";
+                        //resp = {{"ok",false},{"error","opencl disabled at build time"}};
                     #endif
                     } else if(framework=="vulkan"){
                     #ifdef HAVE_VULKAN
                         if(!vulkan_executor_){
-                            resp = {{"ok",false},{"error","Vulkan executor is not available or failed to initialize"}};
+                            resp = nlohmann::json::object();
+                            resp["ok"] = false;
+                            resp["error"] = "Vulkan executor is not available or failed to initialize";
+                            //resp = {{"ok",false},{"error","Vulkan executor is not available or failed to initialize"}};
                         } else {
                             auto result = vulkan_executor_->run_task(req);
                             if(result.ok){
@@ -413,14 +470,23 @@ void LocalWSServer::run_plain(const std::string& address, unsigned short port, c
                                 resp = make_ok(result);
                             } else {
                                 std::cerr << "[local-ws] Vulkan task failed: " << result.error << std::endl;
-                                resp = {{"ok",false},{"error",result.error}};
+                                resp = nlohmann::json::object();
+                                resp["ok"] = false;
+                                resp["error"] = result.error;
+                                //resp = {{"ok",false},{"error",result.error}};
                             }
                         }
                     #else
-                        resp = {{"ok",false},{"error","vulkan disabled at build time"}};
+                        resp = nlohmann::json::object();
+                        resp["ok"] = false;
+                        resp["error"] = "vulkan disabled at build time";
+                        //resp = {{"ok",false},{"error","vulkan disabled at build time"}};
                     #endif
                     } else {
-                        resp = {{"ok",false},{"error","framework must be cuda|opencl|vulkan"}};
+                        resp = nlohmann::json::object();
+                        resp["ok"] = false;
+                        resp["error"] = "framework must be cuda|opencl|vulkan";
+                        //resp = {{"ok",false},{"error","framework must be cuda|opencl|vulkan"}};
                     }
                 }
 

@@ -26,4 +26,13 @@ private:
 
     bool running=false;
     std::thread th;
+#ifdef HAVE_CUDA
+    std::unique_ptr<CudaExecutor> cuda_executor_;
+#endif
+#ifdef HAVE_OPENCL
+    std::unique_ptr<OpenCLExecutor> opencl_executor_;
+#endif
+#ifdef HAVE_VULKAN
+    std::unique_ptr<VulkanExecutor> vulkan_executor_;
+#endif
 };
