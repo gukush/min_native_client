@@ -55,6 +55,11 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
                 const std::vector<size_t>& outputSizes,
                 const std::vector<int>& grid, const std::vector<int>& block,
                 std::vector<std::vector<uint8_t>>& outputs){
+    CUcontext prev_ctx = nullptr;
+    check(cuCtxGetCurrent(&prev_ctx), "cuCtxGetCurrent");
+    if(prev_ctx != ctx){
+        if(!check(cuCtxSetCurrent(ctx), "cuCtxSetCurrent")) return false;
+    }
     CUmodule mod=nullptr; CUfunction fun=nullptr;
     if(!check(cuModuleLoadDataEx(&mod, ptx.c_str(), 0, nullptr, nullptr), "cuModuleLoadDataEx")) return false;
     if(!check(cuModuleGetFunction(&fun, mod, entry.c_str()), "cuModuleGetFunction")){ cuModuleUnload(mod); return false; }
@@ -93,6 +98,9 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     }
     for(auto d: dIn) cuMemFree(d);
     cuModuleUnload(mod);
+    if (prev_ctx != ctx){
+        check(cuCtxSetCurrent(prev_ctx), "cuCtxSetCurrent(restore)");
+    }
     return true;
 }
 
