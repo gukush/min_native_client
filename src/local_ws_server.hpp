@@ -4,6 +4,10 @@
 #include <nlohmann/json.hpp>
 #include <boost/asio/ssl.hpp>
 
+class CudaExecutor;
+class OpenCLExecutor;
+class VulkanExecutor;
+
 class LocalWSServer {
 public:
     using json = nlohmann::json;

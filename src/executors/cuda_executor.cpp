@@ -136,9 +136,15 @@ ExecResult CudaExecutor::run_task(const json& task){
     return r;
 }
 
+CudaExecutor::~CudaExecutor(){
+    if(ctx) {
+        cuCtxDestroy(ctx);
+    }
+}
+
 #else
 
 bool CudaExecutor::initialize(const json& cfg){ (void)cfg; return false; }
 ExecResult CudaExecutor::run_task(const json& task){ (void)task; return ExecResult{false,{},{}, "CUDA disabled"}; }
-
+CudaExecutor::~CudaExecutor(){};
 #endif

@@ -14,6 +14,7 @@ public:
     explicit CudaExecutor(int deviceId=0) : devId(deviceId) {}
     bool initialize(const json& cfg) override;
     ExecResult run_task(const json& task) override;
+    ~CudaExecutor();
 
 private:
 #ifdef HAVE_CUDA
