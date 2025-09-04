@@ -191,7 +191,20 @@ ExecResult OpenCLExecutor::run_task(const json& task){
 
     std::cerr << "[OpenCL] Setting kernel arguments..." << std::endl;
 
-    // Create input buffers and set kernel args for them (first 2 arguments)
+    // Set uniform args first (standardized ordering: uniforms, then inputs, then outputs)
+    for(size_t i=0;i<uniforms.size();++i){
+        uint64_t u = uniforms[i];
+        int intVal = static_cast<int>(u);  // Convert uint64_t to int for kernel
+        std::cerr << "[OpenCL] Setting uniform arg " << i << " = " << u << " (as int: " << intVal << ")" << std::endl;
+        err = clSetKernelArg(guard.kernel, argIndex++, sizeof(int), &intVal);
+        if(err!=CL_SUCCESS){
+            std::cerr << "[OpenCL] clSetKernelArg uniform failed with error: " << err << std::endl;
+            r.error = "clSetKernelArg uniform failed";
+            return finish(r);
+        }
+    }
+
+    // Create input buffers and set kernel args for them
     std::cerr << "[OpenCL] Creating input buffers..." << std::endl;
     guard.inBufs.resize(inputs.size(), nullptr);
     for(size_t i=0;i<inputs.size();++i){
@@ -211,7 +224,7 @@ ExecResult OpenCLExecutor::run_task(const json& task){
         }
     }
 
-    // Create output buffers and set kernel args for them (3rd argument)
+    // Create output buffers and set kernel args for them
     std::cerr << "[OpenCL] Creating output buffers..." << std::endl;
     guard.outBufs.resize(outputSizes.size(), nullptr);
     for(size_t i=0;i<outputSizes.size();++i){
@@ -227,19 +240,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clSetKernelArg output failed with error: " << err << std::endl;
             r.error = "clSetKernelArg output failed";
-            return finish(r);
-        }
-    }
-
-    // Set uniform args (arguments 4, 5, 6: rows, K, cols)
-    for(size_t i=0;i<uniforms.size();++i){
-        uint64_t u = uniforms[i];
-        int intVal = static_cast<int>(u);  // Convert uint64_t to int for kernel
-        std::cerr << "[OpenCL] Setting uniform arg " << i << " = " << u << " (as int: " << intVal << ")" << std::endl;
-        err = clSetKernelArg(guard.kernel, argIndex++, sizeof(int), &intVal);
-        if(err!=CL_SUCCESS){
-            std::cerr << "[OpenCL] clSetKernelArg uniform failed with error: " << err << std::endl;
-            r.error = "clSetKernelArg uniform failed";
             return finish(r);
         }
     }

@@ -118,10 +118,11 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         if(!check(cuMemAlloc(&dOut[i], outputSizes[i]),"cuMemAlloc(out)")) return false;
     }
 
-    // build args: uniforms first (as 64-bit values), then inputs, then outputs
+    // build args: uniforms first (as 32-bit values), then inputs, then outputs
     std::vector<void*> args;
-    std::vector<uint64_t> uniformsCopy = uniforms;
-    for(auto& u: uniformsCopy) args.push_back(&u);
+    std::vector<uint32_t> uniforms32;
+    for(auto& u: uniforms) uniforms32.push_back(static_cast<uint32_t>(u));
+    for(auto& u: uniforms32) args.push_back(&u);
     for(auto& d: dIn) args.push_back(&d);
     for(auto& d: dOut) args.push_back(&d);
 
