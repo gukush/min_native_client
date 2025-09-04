@@ -4,6 +4,7 @@
 #ifdef HAVE_CUDA
 #include <cuda.h>
 #include <nvrtc.h>
+#include <cuda_runtime.h>
 #endif
 #include <string>
 #include <vector>

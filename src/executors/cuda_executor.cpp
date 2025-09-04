@@ -31,7 +31,7 @@ bool CudaExecutor::initialize(const json& cfg){
     int cnt=0; if(!check(cuDeviceGetCount(&cnt),"cuDeviceGetCount")) return false;
     if(cnt<=0){ std::cerr<<"no cuda devices"<<std::endl; return false; }
     CUdevice dev; if(!check(cuDeviceGet(&dev, devId),"cuDeviceGet")) return false;
-    if(!check(cuCtxCreate(&ctx, 0, dev),"cuCtxCreate")) return false;
+    if(!check(cuCtxCreate(&ctx, /*ctxCreateParams=*/nullptr,/*flags=*/0, dev),"cuCtxCreate")) return false;
     return true;
 }
 
