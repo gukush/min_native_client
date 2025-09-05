@@ -8,6 +8,8 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/ssl.hpp>
+
+using json = nlohmann::json;
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/error.hpp>
@@ -24,7 +26,7 @@ namespace ssl = boost::asio::ssl;
 LocalWSServer::LocalWSServer(int concurrency) : max_concurrency(concurrency) {
     std::cout << "[local-ws] Initializing with concurrency: " << concurrency << std::endl;
     thread_pool = std::make_unique<ThreadPool>(concurrency);
-    
+
     std::cout << "[local-ws] Initializing GPU executors..." << std::endl;
     #ifdef HAVE_CUDA
     cuda_executor_ = std::make_unique<CudaExecutor>(0);
@@ -58,22 +60,22 @@ LocalWSServer::~LocalWSServer(){ stop(); }
 
 json LocalWSServer::process_request(const json& req) {
     nlohmann::json resp;
-    
+
     if(req.is_discarded() || req.value("action","")!="compile_and_run"){
         resp = nlohmann::json::object();
         resp["ok"] = false;
         resp["error"] = "invalid request";
         return resp;
     }
-    
+
     const std::string framework = req.value("framework","cuda");
-    
+
     auto make_ok = [](const auto& result){
         nlohmann::json outs = nlohmann::json::array();
         for(const auto& o : result.outputs) outs.push_back(base64_encode(o));
         return nlohmann::json{{"ok",true},{"outputs",outs},{"processingTimeMs",result.ms}};
     };
-    
+
     if(framework=="cuda"){
     #ifdef HAVE_CUDA
         if(!cuda_executor_){
@@ -148,7 +150,7 @@ json LocalWSServer::process_request(const json& req) {
         resp["ok"] = false;
         resp["error"] = "framework must be cuda|opencl|vulkan";
     }
-    
+
     return resp;
 }
 
@@ -233,9 +235,9 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                 try{
                     active_requests++;
                     std::cout << "[local-ws] Active requests: " << active_requests.load() << "/" << max_concurrency << std::endl;
-                    
+
                     ssl::stream<tcp::socket> ssl_socket{std::move(socket), ctx};
-                    
+
                     boost::system::error_code hs_ec;
                     ssl_socket.handshake(ssl::stream_base::server, hs_ec);
                     if(hs_ec){
@@ -285,10 +287,10 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                     buffer.clear();
 
                     nlohmann::json req = nlohmann::json::parse(s, nullptr, false);
-                    
+
                     // Process request
                     auto resp = process_request(req);
-                    
+
                     // Send response
                     auto out = resp.dump();
                     ws.text(true);
@@ -317,9 +319,9 @@ void LocalWSServer::run_ssl(const std::string& address, unsigned short port, con
                     }
                     boost::system::error_code close_ec;
                     ssl_socket.lowest_layer().close(close_ec);
-                    
+
                     active_requests--;
-                    
+
                 }catch(std::exception const& e){
                     if(running) std::cerr << "[local-ws] connection handler exception: " << e.what() << std::endl;
                     active_requests--;
@@ -376,7 +378,7 @@ void LocalWSServer::run_plain(const std::string& address, unsigned short port, c
                 try{
                     active_requests++;
                     std::cout << "[local-ws] Active requests: " << active_requests.load() << "/" << max_concurrency << std::endl;
-                    
+
                     websocket::stream<tcp::socket> ws{std::move(socket)};
                     boost::system::error_code ws_accept_ec;
                     ws.accept(ws_accept_ec);
@@ -411,10 +413,10 @@ void LocalWSServer::run_plain(const std::string& address, unsigned short port, c
                     buffer.clear();
 
                     nlohmann::json req = nlohmann::json::parse(s, nullptr, false);
-                    
+
                     // Process request
                     auto resp = process_request(req);
-                    
+
                     // Send response
                     auto out = resp.dump();
                     ws.text(true);
@@ -435,7 +437,7 @@ void LocalWSServer::run_plain(const std::string& address, unsigned short port, c
                     }
                     boost::system::error_code underlying_close_ec;
                     ws.next_layer().close(underlying_close_ec);
-                    
+
                     active_requests--;
 
                 }catch(std::exception const& e){

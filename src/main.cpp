@@ -92,6 +92,11 @@ int main(int argc, char** argv){
         else if(a=="--insecure"){
             insecure=true;
             Logger::debug("Insecure mode enabled");
+            // Change default URL to use ws:// instead of wss://
+            if(url.find("wss://") == 0) {
+                url = "ws://" + url.substr(6);
+                Logger::debug("Changed URL to insecure: " + url);
+            }
         }
         else if(a=="--ssl"){
             use_ssl=true;
@@ -121,7 +126,7 @@ int main(int argc, char** argv){
     Logger::info("Configuration:");
     Logger::info("  Mode: " + mode);
     Logger::info("  Concurrency: " + std::to_string(concurrency) + " threads");
-    
+
     if(mode == "server") {
         Logger::info("  Server URL: " + url);
         Logger::info("  Insecure: " + std::string(insecure ? "true" : "false"));

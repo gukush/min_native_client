@@ -1,16 +1,19 @@
 #include "server_client.hpp"
 #include "thread_pool.hpp"
+#include "base64.hpp"
 #include <iostream>
 #include <thread>
 
-ServerBinaryClient::ServerBinaryClient(bool insecure, int concurrency) 
+using json = nlohmann::json;
+
+ServerBinaryClient::ServerBinaryClient(bool insecure, int concurrency)
     : max_concurrency_(concurrency) {
     std::cout << "[client] Initializing with concurrency: " << concurrency << std::endl;
     thread_pool_ = std::make_unique<ThreadPool>(concurrency);
-    
+
     ws_ = std::make_unique<WebSocketClient>();
     bin_ = std::make_unique<BinaryExecutor>();
-    ws_->onConnected = [&]{ 
+    ws_->onConnected = [&]{
         connected_=true;
         std::cout << "[client] Connected with " << concurrency << " worker threads" << std::endl;
     };
@@ -23,15 +26,52 @@ ServerBinaryClient::~ServerBinaryClient() {
 }
 
 std::tuple<std::string,std::string> ServerBinaryClient::split_host_port(const std::string& url){
-    auto s = url.substr(6);
+    std::string s;
+    std::string default_port = "443";
+    
+    if(url.find("wss://") == 0) {
+        s = url.substr(6);
+        default_port = "443";
+    } else if(url.find("ws://") == 0) {
+        s = url.substr(5);
+        default_port = "80";
+    } else {
+        // Fallback: assume it's already just host:port
+        s = url;
+        default_port = "80";
+    }
+    
     auto pos = s.find(':');
-    if(pos==std::string::npos) return {s,"443"};
+    if(pos==std::string::npos) return {s, default_port};
     return {s.substr(0,pos), s.substr(pos+1)};
 }
 
 bool ServerBinaryClient::connect(const std::string& url){
     auto [host,port] = split_host_port(url);
-    return ws_->connect(host, port, "/ws-native");
+    // Determine if we should use SSL based on the URL scheme
+    bool use_ssl = (url.find("wss://") == 0);
+    bool connected = ws_->connect(host, port, "/ws-native", use_ssl);
+
+    if (connected) {
+        // Send client registration message after successful connection
+        nlohmann::json capabilities = {
+            {"device", {
+                {"name", "Native Multi-Framework Client"},
+                {"type", "native"},
+                {"vendor", "MultiFramework"},
+                {"memory", 8192},
+                {"computeUnits", 32}
+            }},
+            {"supportedFrameworks", {"vulkan", "opencl", "cuda"}},
+            {"clientType", "native"},
+            {"hasWebGPU", false}
+        };
+
+        ws_->joinComputation(capabilities);
+        std::cout << "[client] Sent client registration with capabilities" << std::endl;
+    }
+
+    return connected;
 }
 
 void ServerBinaryClient::run(){
@@ -65,7 +105,7 @@ void ServerBinaryClient::handle_chunk(const json& c){
     if(active_chunks_ >= max_concurrency_) {
         std::cout << "[client] Queue full, waiting..." << std::endl;
     }
-    
+
     active_chunks_++;
     thread_pool_->enqueue([this, c]() {
         process_chunk_concurrent(c);
@@ -77,7 +117,7 @@ void ServerBinaryClient::process_chunk_concurrent(const json& c){
     auto res = bin_->execute(c);
     nlohmann::json arr = nlohmann::json::array();
     for(auto& o: res.outputs) arr.push_back(base64_encode(o));
-    
+
     nlohmann::json reply = {
         {"type","workload:chunk_done_enhanced"},
         {"data",{
@@ -87,7 +127,7 @@ void ServerBinaryClient::process_chunk_concurrent(const json& c){
             {"processingTime", res.ms}
         }}
     };
-    
+
     ws_->send_json(reply);
 }
 

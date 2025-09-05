@@ -6,6 +6,8 @@
 #include <boost/beast/websocket/ssl.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/url.hpp>
+#include <chrono>
+#include <thread>
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -27,69 +29,72 @@ WebSocketClient::~WebSocketClient() {
     disconnect();
 }
 
-bool WebSocketClient::connect(const std::string& host, const std::string& port, const std::string& target, bool use_ssl) {
+bool WebSocketClient::connect(const std::string& host, const std::string& port, const std::string& target) {
     try {
+        // Determine if we should use SSL based on the port or other criteria
+        // For now, let's make it configurable via the URL parsing
+        use_ssl = false; // We'll set this based on the URL in the calling code
+        
         // Resolve hostname
         auto const results = resolver.resolve(host, port);
-        use_ssl_connection = use_ssl;
 
         if (use_ssl) {
-            // SSL WebSocket connection
-            ssl_ws = std::make_unique<boost::beast::websocket::stream<boost::asio::ssl::stream<boost::beast::tcp_stream>>>(ioc, ssl_ctx);
-
+            // Create SSL WebSocket stream
+            ws = ssl_ws{ioc, ssl_ctx};
+            auto& ssl_ws_ref = std::get<ssl_ws>(ws);
+            
             // Get the underlying socket
-            auto& socket = beast::get_lowest_layer(*ssl_ws);
-
-            // Make the connection on the IP address we get from a lookup
+            auto& socket = beast::get_lowest_layer(ssl_ws_ref);
+            
+            // Make the connection
             socket.connect(results);
-
-            // Update the host string for SNI
-            std::string hostWithPort = host + ':' + port;
-
-            // Set SNI Hostname (many hosts need this to handshake successfully)
-            if (!SSL_set_tlsext_host_name(ssl_ws->next_layer().native_handle(), host.c_str())) {
+            
+            // Set SNI Hostname
+            if (!SSL_set_tlsext_host_name(ssl_ws_ref.next_layer().native_handle(), host.c_str())) {
                 beast::error_code ec{static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()};
                 throw beast::system_error{ec};
             }
-
+            
             // Perform the SSL handshake
-            ssl_ws->next_layer().handshake(ssl::stream_base::client);
-
-            // Set a decorator to change the User-Agent of the handshake
-            ssl_ws->set_option(websocket::stream_base::decorator(
+            ssl_ws_ref.next_layer().handshake(ssl::stream_base::client);
+            
+            // Set decorator
+            ssl_ws_ref.set_option(websocket::stream_base::decorator(
                 [](websocket::request_type& req) {
                     req.set(beast::http::field::user_agent, "MultiFramework-Native-Client/1.0");
                 }));
-
-            // Connect to the native WebSocket endpoint
-            ssl_ws->handshake(hostWithPort, target);
-
-            std::cout << " Connected to SSL WebSocket endpoint: " << target << std::endl;
+            
+            // Perform WebSocket handshake
+            std::string hostWithPort = host + ':' + port;
+            ssl_ws_ref.handshake(hostWithPort, target);
+            
         } else {
-            // Plain WebSocket connection
-            plain_ws = std::make_unique<boost::beast::websocket::stream<boost::beast::tcp_stream>>(ioc);
-
+            // Create plain WebSocket stream
+            ws = plain_ws{ioc};
+            auto& plain_ws_ref = std::get<plain_ws>(ws);
+            
             // Get the underlying socket
-            auto& socket = plain_ws->next_layer();
-
-            // Make the connection on the IP address we get from a lookup
+            auto& socket = plain_ws_ref.next_layer();
+            
+            // Make the connection
             socket.connect(results);
-
-            // Set a decorator to change the User-Agent of the handshake
-            plain_ws->set_option(websocket::stream_base::decorator(
+            
+            // Set decorator
+            plain_ws_ref.set_option(websocket::stream_base::decorator(
                 [](websocket::request_type& req) {
                     req.set(beast::http::field::user_agent, "MultiFramework-Native-Client/1.0");
                 }));
-
-            // Connect to the native WebSocket endpoint
-            plain_ws->handshake(host, target);
-
-            std::cout << " Connected to plain WebSocket endpoint: " << target << std::endl;
+            
+            // Perform WebSocket handshake
+            std::string hostWithPort = host + ':' + port;
+            plain_ws_ref.handshake(hostWithPort, target);
         }
 
         // Start the event loop in a separate thread
         shouldStop = false;
         ioThread = std::thread(&WebSocketClient::runEventLoop, this);
+
+        std::cout << " Connected to WebSocket endpoint: " << target << std::endl;
 
         if (onConnected) {
             onConnected();
@@ -106,15 +111,13 @@ bool WebSocketClient::connect(const std::string& host, const std::string& port, 
 void WebSocketClient::disconnect() {
     shouldStop = true;
 
-    if (use_ssl_connection && ssl_ws && ssl_ws->is_open()) {
+    if (isConnected()) {
         try {
-            ssl_ws->close(websocket::close_code::normal);
-        } catch (...) {
-            // Ignore errors during close
-        }
-    } else if (!use_ssl_connection && plain_ws && plain_ws->is_open()) {
-        try {
-            plain_ws->close(websocket::close_code::normal);
+            if (use_ssl) {
+                std::get<ssl_ws>(ws).close(websocket::close_code::normal);
+            } else {
+                std::get<plain_ws>(ws).close(websocket::close_code::normal);
+            }
         } catch (...) {
             // Ignore errors during close
         }
@@ -130,24 +133,40 @@ void WebSocketClient::disconnect() {
 }
 
 bool WebSocketClient::isConnected() const {
-    if (use_ssl_connection) {
-        return ssl_ws && ssl_ws->is_open();
+    if (use_ssl) {
+        return std::get<ssl_ws>(ws).is_open();
     } else {
-        return plain_ws && plain_ws->is_open();
+        return std::get<plain_ws>(ws).is_open();
+    }
+}
+
+void WebSocketClient::sendMessage(const std::string& message) {
+    try {
+        if (use_ssl) {
+            std::get<ssl_ws>(ws).write(net::buffer(message));
+        } else {
+            std::get<plain_ws>(ws).write(net::buffer(message));
+        }
+    } catch (std::exception const& e) {
+        std::cerr << "WS send error: " << e.what() << std::endl;
     }
 }
 
 void WebSocketClient::send_json(const json& j) {
     try {
         auto s = j.dump();
-        if (use_ssl_connection && ssl_ws) {
-            ssl_ws->write(net::buffer(s));
-        } else if (!use_ssl_connection && plain_ws) {
-            plain_ws->write(net::buffer(s));
-        }
+        sendMessage(s);
     } catch (std::exception const& e) {
         std::cerr << "WS send error: " << e.what() << std::endl;
     }
+}
+
+void WebSocketClient::send(const std::string& message) {
+    if (!isConnected()) {
+        std::cerr << "WebSocket not connected, cannot send message" << std::endl;
+        return;
+    }
+    sendMessage(message);
 }
 
 void WebSocketClient::sendEvent(const std::string& eventType, const json& data) {
@@ -165,30 +184,9 @@ void WebSocketClient::sendEvent(const std::string& eventType, const json& data) 
         std::string messageStr = message.dump();
         std::cout << "[WS-SEND] " << eventType << ": " << messageStr << std::endl;
 
-        if (use_ssl_connection && ssl_ws) {
-            ssl_ws->write(net::buffer(messageStr));
-        } else if (!use_ssl_connection && plain_ws) {
-            plain_ws->write(net::buffer(messageStr));
-        }
+        sendMessage(messageStr);
     } catch (std::exception const& e) {
         std::cerr << "WebSocket send error for event " << eventType << ": " << e.what() << std::endl;
-    }
-}
-
-void WebSocketClient::send(const std::string& message) {
-    if (!isConnected()) {
-        std::cerr << "WebSocket not connected, cannot send message" << std::endl;
-        return;
-    }
-
-    try {
-        if (use_ssl_connection && ssl_ws) {
-            ssl_ws->write(net::buffer(message));
-        } else if (!use_ssl_connection && plain_ws) {
-            plain_ws->write(net::buffer(message));
-        }
-    } catch (std::exception const& e) {
-        std::cerr << "WebSocket send error: " << e.what() << std::endl;
     }
 }
 
@@ -283,12 +281,10 @@ void WebSocketClient::runEventLoop() {
     while (!shouldStop && isConnected()) {
         try {
             // Read a message
-            if (use_ssl_connection && ssl_ws) {
-                ssl_ws->read(buffer);
-            } else if (!use_ssl_connection && plain_ws) {
-                plain_ws->read(buffer);
+            if (use_ssl) {
+                std::get<ssl_ws>(ws).read(buffer);
             } else {
-                break;
+                std::get<plain_ws>(ws).read(buffer);
             }
 
             // Convert to string
@@ -336,15 +332,6 @@ void WebSocketClient::runEventLoop() {
                     std::cout << " K parameter updated to: " << eventData << std::endl;
                 } else if (eventType == "clients:update") {
                     // Optional: handle client list updates
-                } else if (eventType == "message") {
-                    // Simple message/acknowledgment from server
-                    std::cout << " Server message: " << eventData.dump() << std::endl;
-                } else if (eventType == "pong") {
-                    // WebSocket pong response
-                    std::cout << " Received pong from server" << std::endl;
-                } else if (eventType == "ping") {
-                    // WebSocket ping request
-                    std::cout << " Received ping from server" << std::endl;
                 } else {
                     std::cout << " Unknown event type: " << eventType << std::endl;
                 }

@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <thread>
 #include <functional>
+#include <memory>
 
 class WebSocketClient {
 public:
@@ -13,7 +14,7 @@ public:
     WebSocketClient();
     ~WebSocketClient();
 
-    bool connect(const std::string& host, const std::string& port, const std::string& target="/ws-native");
+    bool connect(const std::string& host, const std::string& port, const std::string& target="/ws-native", bool use_ssl=true);
     void disconnect();
     void send_json(const json& j);
     void send(const std::string& message);
@@ -49,11 +50,17 @@ public:
 
 private:
     void runEventLoop();
+    bool isConnected() const;
 
     boost::asio::io_context ioc;
     boost::asio::ip::tcp::resolver resolver{ioc};
-    boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_client};
-    boost::beast::websocket::stream<boost::asio::ssl::stream<boost::beast::tcp_stream>> ws{ioc, ctx};
+    boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
+
+    // Use variant to handle both SSL and non-SSL connections
+    std::unique_ptr<boost::beast::websocket::stream<boost::asio::ssl::stream<boost::beast::tcp_stream>>> ssl_ws;
+    std::unique_ptr<boost::beast::websocket::stream<boost::beast::tcp_stream>> plain_ws;
+    bool use_ssl_connection = true;
+
     std::thread ioThread;
     bool shouldStop = false;
 };

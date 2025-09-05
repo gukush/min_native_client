@@ -14,6 +14,23 @@
 KernelCache<VulkanExecutor::VulkanKernel> VulkanExecutor::kernel_cache_;
 thread_local VkCommandPool VulkanExecutor::thread_cmd_pool = VK_NULL_HANDLE;
 
+VulkanExecutor::VulkanExecutor() {
+    // Initialize with default configuration
+    json defaultConfig = json::object();
+    initialize(defaultConfig);
+}
+
+VulkanExecutor::~VulkanExecutor() {
+    // Cleanup Vulkan resources
+    if (device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device);
+        vkDestroyDevice(device, nullptr);
+    }
+    if (instance != VK_NULL_HANDLE) {
+        vkDestroyInstance(instance, nullptr);
+    }
+}
+
 static const char* vkErr(VkResult r){
 #define C(x) case x: return #x;
     switch(r){
@@ -188,7 +205,7 @@ bool VulkanExecutor::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, 
     return true;
 }
 
-bool VulkanExecutor::build_pipeline_from_glsl(const std::string& glsl, const std::string& entry, VkShaderModule& module){
+bool VulkanExecutor::build_pipeline_from_glsl(const std::string& glsl, const std::string& entry, VkShaderModule& module, std::vector<uint32_t>& spirv){
 #ifndef HAVE_SHADERC
     std::cerr<<"shaderc not available; provide SPIR-V instead\n";
     return false;
@@ -200,7 +217,7 @@ bool VulkanExecutor::build_pipeline_from_glsl(const std::string& glsl, const std
         std::cerr<<"shaderc compile error: "<<res.GetErrorMessage()<<std::endl;
         return false;
     }
-    std::vector<uint32_t> spirv(res.cbegin(), res.cend());
+    spirv.assign(res.cbegin(), res.cend());
     return build_pipeline_from_spirv(spirv, module);
 #endif
 }
@@ -279,18 +296,19 @@ ExecResult VulkanExecutor::run_task(const json& task){
     }
 
     // Create shader module using cache
+    VkShaderModule shader = VK_NULL_HANDLE;
     std::string spirv_b64 = "";
     if(!glsl.empty()) {
-        // For GLSL, we'll pass empty spirv_b64 and let get_or_build_shader handle GLSL compilation
-        auto cached_shader = get_or_build_shader(glsl, spirv_b64);
-        if(!cached_shader) {
-            r.error = "shader compilation/caching failed";
+        // For GLSL, compile and cache
+        if(!build_pipeline_from_glsl(glsl, entry, shader, spirv)) {
+            r.error = "shader compilation failed";
             return r;
         }
-        shader = cached_shader->kernel.module;
     } else {
         // For SPIR-V, encode to base64 and use cache
-        spirv_b64 = base64_encode(std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t)));
+        std::vector<uint8_t> spirv_bytes(reinterpret_cast<const uint8_t*>(spirv.data()),
+                                       reinterpret_cast<const uint8_t*>(spirv.data()) + spirv.size() * sizeof(uint32_t));
+        spirv_b64 = base64_encode(spirv_bytes);
         auto cached_shader = get_or_build_shader("", spirv_b64);
         if(!cached_shader) {
             r.error = "shader compilation/caching failed";
