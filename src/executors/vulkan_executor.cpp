@@ -11,6 +11,9 @@
 
 #ifdef HAVE_VULKAN
 
+KernelCache<VulkanExecutor::VulkanKernel> VulkanExecutor::kernel_cache_;
+thread_local VkCommandPool VulkanExecutor::thread_cmd_pool = VK_NULL_HANDLE;
+
 static const char* vkErr(VkResult r){
 #define C(x) case x: return #x;
     switch(r){
@@ -20,6 +23,62 @@ static const char* vkErr(VkResult r){
         C(VK_ERROR_INCOMPATIBLE_DRIVER) default: return "VK_ERROR_UNKNOWN";
     }
 #undef C
+}
+
+VkCommandPool VulkanExecutor::get_thread_cmd_pool() {
+    if (thread_cmd_pool == VK_NULL_HANDLE) {
+        std::lock_guard<std::mutex> lock(device_mutex_);
+        VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        cpi.queueFamilyIndex = queueFamily;
+        cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        auto r = vkCreateCommandPool(device, &cpi, nullptr, &thread_cmd_pool);
+        if(r != VK_SUCCESS) {
+            std::cerr<<"[Vulkan] Thread command pool creation failed: "<<vkErr(r)<<"\n";
+            return VK_NULL_HANDLE;
+        }
+    }
+    return thread_cmd_pool;
+}
+
+
+std::shared_ptr<KernelCache<VulkanExecutor::VulkanKernel>::CachedKernel>
+VulkanExecutor::get_or_build_shader(const std::string& glsl, const std::string& spirv_b64) {
+    std::string key = KernelCache<VulkanKernel>::computeHash(glsl + spirv_b64);
+
+    auto cached = kernel_cache_.get(key);
+    if(cached) {
+        std::cout << "[Vulkan] Using cached shader module" << std::endl;
+        return cached;
+    }
+
+    std::cout << "[Vulkan] Building new shader module" << std::endl;
+
+    VkShaderModule module;
+    std::vector<uint32_t> spirv;
+
+    if(!glsl.empty()) {
+        if(!build_pipeline_from_glsl(glsl, "main", module, spirv)) {
+            return nullptr;
+        }
+    } else if(!spirv_b64.empty()) {
+        auto spirvb = base64_decode(spirv_b64);
+        spirv.resize((spirvb.size()+3)/4);
+        std::memcpy(spirv.data(), spirvb.data(), spirvb.size());
+        if(!build_pipeline_from_spirv(spirv, module)) {
+            return nullptr;
+        }
+    } else {
+        return nullptr;
+    }
+
+    auto cachedKernel = std::make_shared<KernelCache<VulkanKernel>::CachedKernel>();
+    cachedKernel->kernel.module = module;
+    cachedKernel->kernel.spirv = spirv;
+    cachedKernel->lastUsed = std::chrono::steady_clock::now();
+
+    kernel_cache_.put(key, cachedKernel);
+    std::cout << "[Vulkan] Shader cached (cache size: " << kernel_cache_.size() << ")" << std::endl;
+    return cachedKernel;
 }
 
 bool VulkanExecutor::create_instance(){
@@ -170,36 +229,17 @@ ExecResult VulkanExecutor::run_task(const json& task){
     auto t0 = std::chrono::high_resolution_clock::now();
 
     std::string entry = task.value("entry","main");
-    std::vector<uint32_t> spirv;
     std::string glsl = task.value("source_glsl","");
-    if(glsl.size()){
-        VkShaderModule dummy=VK_NULL_HANDLE;
-        if(!build_pipeline_from_glsl(glsl, entry, dummy)){
-            r.error="GLSL compile failed";
-            return r;
-        }
-        // dummy was created and thrown away; we'll rebuild below from glsl to get spirv again, but for brevity skip keeping it
-    } else if(task.contains("spirv") && task["spirv"].is_string()){
+    std::vector<uint32_t> spirv;
+
+    if(glsl.empty() && task.contains("spirv") && task["spirv"].is_string()){
         auto spirvb = base64_decode(task["spirv"].get<std::string>());
         spirv.resize((spirvb.size()+3)/4);
         std::memcpy(spirv.data(), spirvb.data(), spirvb.size());
-    } else {
+    } else if(glsl.empty()) {
         r.error="No shader provided";
         return r;
     }
-
-    // For simplicity, compile GLSL again to SPIR-V if provided (to get vector)
-#ifdef HAVE_SHADERC
-    if(glsl.size()){
-        shaderc::Compiler comp; shaderc::CompileOptions opts;
-        auto res = comp.CompileGlslToSpv(glsl, shaderc_compute_shader, "shader.comp", opts);
-        if(res.GetCompilationStatus()!=shaderc_compilation_status_success){
-            r.error = "shaderc compile failed: " + std::string(res.GetErrorMessage());
-            return r;
-        }
-        spirv.assign(res.cbegin(), res.cend());
-    }
-#endif
 
     // Parse buffers
     std::vector<std::vector<uint8_t>> inputs;
@@ -238,9 +278,26 @@ ExecResult VulkanExecutor::run_task(const json& task){
         std::memcpy(uniformsBuf.data(), uniforms32.data(), uniformsBuf.size());
     }
 
-    // Create shader module
-    VkShaderModule shader = VK_NULL_HANDLE;
-    if(!build_pipeline_from_spirv(spirv, shader)){ r.error="shader module failed"; return r; }
+    // Create shader module using cache
+    std::string spirv_b64 = "";
+    if(!glsl.empty()) {
+        // For GLSL, we'll pass empty spirv_b64 and let get_or_build_shader handle GLSL compilation
+        auto cached_shader = get_or_build_shader(glsl, spirv_b64);
+        if(!cached_shader) {
+            r.error = "shader compilation/caching failed";
+            return r;
+        }
+        shader = cached_shader->kernel.module;
+    } else {
+        // For SPIR-V, encode to base64 and use cache
+        spirv_b64 = base64_encode(std::string(reinterpret_cast<const char*>(spirv.data()), spirv.size() * sizeof(uint32_t)));
+        auto cached_shader = get_or_build_shader("", spirv_b64);
+        if(!cached_shader) {
+            r.error = "shader compilation/caching failed";
+            return r;
+        }
+        shader = cached_shader->kernel.module;
+    }
 
     // Descriptor set layout: 1 uniform buffer + N inputs + M outputs
     std::vector<VkDescriptorSetLayoutBinding> bindings;
@@ -343,12 +400,22 @@ ExecResult VulkanExecutor::run_task(const json& task){
     }
     vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
 
-    // Command buffer
+    // Command buffer - use thread-local command pool
+    VkCommandPool threadPool = get_thread_cmd_pool();
+    if(threadPool == VK_NULL_HANDLE) {
+        r.error = "thread command pool creation failed";
+        return r;
+    }
+
     VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cai.commandPool = cmdPool;
+    cai.commandPool = threadPool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cai.commandBufferCount = 1;
-    VkCommandBuffer cmd; vkAllocateCommandBuffers(device, &cai, &cmd);
+    VkCommandBuffer cmd;
+    if(vkAllocateCommandBuffers(device, &cai, &cmd) != VK_SUCCESS) {
+        r.error = "command buffer allocation failed";
+        return r;
+    }
 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     vkBeginCommandBuffer(cmd, &bi);
@@ -376,8 +443,7 @@ ExecResult VulkanExecutor::run_task(const json& task){
     }
     r.ok=true;
 
-    // Cleanup per-run resources
-    if(shader) vkDestroyShaderModule(device, shader, nullptr);
+    // Cleanup per-run resources (shader is cached, don't destroy)
     if(pipe) vkDestroyPipeline(device, pipe, nullptr);
     if(layout) vkDestroyPipelineLayout(device, layout, nullptr);
     if(dsl) vkDestroyDescriptorSetLayout(device, dsl, nullptr);

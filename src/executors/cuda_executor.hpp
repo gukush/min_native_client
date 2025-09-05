@@ -1,6 +1,6 @@
-
 #pragma once
 #include "iexecutor.hpp"
+#include "kernel_cache.hpp"
 #ifdef HAVE_CUDA
 #include <cuda.h>
 #include <nvrtc.h>
@@ -8,6 +8,7 @@
 #endif
 #include <string>
 #include <vector>
+#include <memory>
 
 class CudaExecutor : public IExecutor {
 public:
@@ -18,8 +19,18 @@ public:
 
 private:
 #ifdef HAVE_CUDA
+    struct CudaKernel {
+        std::string ptx;
+        std::string entry;
+    };
+    
+    // Static kernel cache shared across all executor instances
+    static KernelCache<CudaKernel> kernel_cache_;
+    
     bool ensureDriver();
     bool compileNVRTC(const std::string& src, const std::string& entry, std::string& ptx);
+    std::shared_ptr<KernelCache<CudaKernel>::CachedKernel> 
+        get_or_compile_kernel(const std::string& src, const std::string& entry);
     bool launch(const std::string& ptx, const std::string& entry,
                 const std::vector<uint64_t>& uniforms,
                 const std::vector<std::vector<uint8_t>>& inputs,

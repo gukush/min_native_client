@@ -46,6 +46,7 @@ static void usage(const char* exe){
     std::cout << "Usage: " << exe << " --mode <server|local> [options]\n";
     std::cout << "Options:\n";
     std::cout << "  --url wss://localhost:3001    Server URL for server mode\n";
+    std::cout << "  --concurrency <n>             Number of concurrent chunks (1-32, default: 1)\n";
     std::cout << "  --insecure                    Allow insecure connections\n";
     std::cout << "  --secure                      Force secure connections\n";
     std::cout << "  --ssl                         Enable SSL for local mode (default: true)\n";
@@ -62,6 +63,7 @@ int main(int argc, char** argv){
     bool use_ssl=true;  // Default to SSL for local mode
     unsigned short port=8787;
     bool verbose=false;
+    int concurrency=1;
 
     Logger::info("Native WebSocket Client starting up...");
     Logger::info("Build timestamp: " + std::string(__DATE__) + " " + std::string(__TIME__));
@@ -76,6 +78,12 @@ int main(int argc, char** argv){
         else if(a=="--url" && i+1<argc){
             url=argv[++i];
             Logger::debug("Server URL set to: " + url);
+        }
+        else if(a=="--concurrency" && i+1<argc){
+            concurrency=std::atoi(argv[++i]);
+            if(concurrency < 1) concurrency = 1;
+            if(concurrency > 32) concurrency = 32;
+            Logger::debug("Concurrency set to: " + std::to_string(concurrency));
         }
         else if(a=="--secure"){
             insecure=false;
@@ -112,6 +120,8 @@ int main(int argc, char** argv){
 
     Logger::info("Configuration:");
     Logger::info("  Mode: " + mode);
+    Logger::info("  Concurrency: " + std::to_string(concurrency) + " threads");
+    
     if(mode == "server") {
         Logger::info("  Server URL: " + url);
         Logger::info("  Insecure: " + std::string(insecure ? "true" : "false"));
@@ -121,14 +131,23 @@ int main(int argc, char** argv){
     }
     Logger::info("  Verbose: " + std::string(verbose ? "enabled" : "disabled"));
 
+    if(concurrency > 1) {
+        Logger::info("=== CONCURRENT MODE ===");
+        Logger::info("Running with " + std::to_string(concurrency) + " worker threads");
+        Logger::info("Multiple chunks will be processed in parallel");
+        Logger::info("Kernel compilation caching is enabled");
+        Logger::warn("Note: GPU resources are shared across threads");
+    }
+
     if(mode=="server"){
         Logger::info("=== SERVER MODE ===");
         Logger::info("Starting server-mode native client (binary execution)...");
         Logger::info("This mode connects TO a remote server, not FROM browsers");
 
         try {
-            ServerBinaryClient client(insecure);
+            ServerBinaryClient client(insecure, concurrency);
             Logger::info("ServerBinaryClient created successfully");
+            Logger::info("Thread pool initialized with " + std::to_string(concurrency) + " workers");
 
             Logger::info("Attempting to connect to: " + url);
             if(!client.connect(url)){
@@ -137,6 +156,7 @@ int main(int argc, char** argv){
                 return 1;
             }
             Logger::info("Successfully connected to server!");
+            Logger::info("Ready to process up to " + std::to_string(concurrency) + " chunks concurrently");
 
             Logger::info("Starting client run loop...");
             client.run();
@@ -190,14 +210,15 @@ int main(int argc, char** argv){
         }
 
         try {
-            Logger::info("Creating LocalWSServer instance...");
-            LocalWSServer srv;
+            Logger::info("Creating LocalWSServer instance with " + std::to_string(concurrency) + " workers...");
+            LocalWSServer srv(concurrency);
 
             Logger::info("Starting WebSocket server...");
             Logger::info("  Address: 127.0.0.1");
             Logger::info("  Port: " + std::to_string(port));
             Logger::info("  Path: /native");
             Logger::info("  SSL: " + std::string(use_ssl ? "enabled" : "disabled"));
+            Logger::info("  Concurrency: " + std::to_string(concurrency) + " concurrent chunks");
 
             if(!srv.start("127.0.0.1", port, "/native", use_ssl)){
                 Logger::error("Failed to start local WebSocket server");
@@ -228,14 +249,11 @@ int main(int argc, char** argv){
             }
 
             Logger::info("");
-            Logger::info("📊 Expected Request Format:");
-            Logger::info("  {");
-            Logger::info("    \"action\": \"compile_and_run\",");
-            Logger::info("    \"framework\": \"cuda|opencl|vulkan\",");
-            Logger::info("    \"source\": \"<kernel_code>\",");
-            Logger::info("    \"inputs\": [...],");
-            Logger::info("    \"outputSizes\": [...]");
-            Logger::info("  }");
+            Logger::info("📊 Concurrency Settings:");
+            Logger::info("  Max concurrent requests: " + std::to_string(concurrency));
+            Logger::info("  Kernel caching: ENABLED (shared across threads)");
+            Logger::info("  Thread pool: " + std::to_string(concurrency) + " workers");
+            Logger::info("  GPU frameworks: CUDA, OpenCL, Vulkan");
 
             Logger::info("");
             Logger::info("⏳ Waiting for connections... (will run for 24 hours)");

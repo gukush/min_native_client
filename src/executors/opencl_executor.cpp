@@ -7,6 +7,10 @@
 
 #ifdef HAVE_OPENCL
 
+// Static member definitions
+KernelCache<OpenCLExecutor::CLKernel> OpenCLExecutor::kernel_cache_;
+std::mutex OpenCLExecutor::queue_mutex_;
+
 bool OpenCLExecutor::pick_first_available(){
     cl_uint numPlatforms=0;
     cl_int err = clGetPlatformIDs(0, nullptr, &numPlatforms);
@@ -22,7 +26,6 @@ bool OpenCLExecutor::pick_first_available(){
         }
     }
     if(!platform || !device){
-        // fallback to CPU
         for(auto p: plats){
             cl_uint numDevs=0;
             if(clGetDeviceIDs(p, CL_DEVICE_TYPE_CPU, 1, &device, &numDevs)==CL_SUCCESS && numDevs>0){
@@ -60,6 +63,7 @@ bool OpenCLExecutor::initialize(const json& cfg){
         return false;
     }
     std::cerr << "[OpenCL] Command queue created successfully" << std::endl;
+    std::cout << "[OpenCL] Executor initialized with kernel cache (size: " << kernel_cache_.size() << ")" << std::endl;
     return true;
 }
 
@@ -104,11 +108,43 @@ bool OpenCLExecutor::build_kernel(const std::string& source, const std::string& 
     return true;
 }
 
+std::shared_ptr<KernelCache<OpenCLExecutor::CLKernel>::CachedKernel> 
+OpenCLExecutor::get_or_build_kernel(const std::string& source, const std::string& entry) {
+    std::string key = KernelCache<CLKernel>::computeHash(source + entry);
+    
+    auto cached = kernel_cache_.get(key);
+    if(cached) {
+        std::cout << "[OpenCL] Using cached kernel for entry: " << entry << std::endl;
+        // Retain references for thread safety
+        clRetainProgram(cached->kernel.program);
+        clRetainKernel(cached->kernel.kernel);
+        return cached;
+    }
+    
+    std::cout << "[OpenCL] Compiling new kernel for entry: " << entry << std::endl;
+    cl_program prog;
+    cl_kernel kernel;
+    std::string buildLog;
+    
+    if(!build_kernel(source, entry, prog, kernel, buildLog)) {
+        return nullptr;
+    }
+    
+    auto cachedKernel = std::make_shared<KernelCache<CLKernel>::CachedKernel>();
+    cachedKernel->kernel.program = prog;
+    cachedKernel->kernel.kernel = kernel;
+    cachedKernel->kernel.buildLog = buildLog;
+    cachedKernel->lastUsed = std::chrono::steady_clock::now();
+    
+    kernel_cache_.put(key, cachedKernel);
+    std::cout << "[OpenCL] Kernel cached (cache size: " << kernel_cache_.size() << ")" << std::endl;
+    return cachedKernel;
+}
+
 ExecResult OpenCLExecutor::run_task(const json& task){
     ExecResult r;
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // helper to attach elapsed time before returning
     auto finish = [&](ExecResult res)->ExecResult {
         auto t1 = std::chrono::high_resolution_clock::now();
         res.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -124,7 +160,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
     std::cerr << "[OpenCL] Source length: " << source.length() << std::endl;
     std::cerr << "[OpenCL] Entry point: '" << entry << "'" << std::endl;
 
-    // Parse uniforms (packed 64-bit values)
     std::vector<uint64_t> uniforms;
     if(task.contains("uniforms") && task["uniforms"].is_array()){
         std::cerr << "[OpenCL] Parsing uniforms..." << std::endl;
@@ -136,7 +171,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
         std::cerr << "[OpenCL] Parsed " << uniforms.size() << " uniforms" << std::endl;
     }
 
-    // Inputs
     std::vector<std::vector<uint8_t>> inputs;
     if(task.contains("inputs") && task["inputs"].is_array()){
         std::cerr << "[OpenCL] Parsing inputs..." << std::endl;
@@ -160,91 +194,94 @@ ExecResult OpenCLExecutor::run_task(const json& task){
         }
     }
 
-    // Small RAII guard that releases OpenCL resources on scope exit.
-    struct CLGuard {
-        cl_program prog = nullptr;
-        cl_kernel kernel = nullptr;
-        std::vector<cl_mem> inBufs;
-        std::vector<cl_mem> outBufs;
-        cl_command_queue queue = nullptr;
-
-        ~CLGuard(){
-            for(auto m: inBufs) if(m) clReleaseMemObject(m);
-            for(auto m: outBufs) if(m) clReleaseMemObject(m);
-            if(kernel) clReleaseKernel(kernel);
-            if(prog) clReleaseProgram(prog);
-            // Do not release queue/context here - they are owned by the executor
-        }
-    } guard;
-
-    // Build kernel (guard.prog / guard.kernel will be released by CLGuard destructor)
-    std::string buildLog;
-    if(!build_kernel(source, entry, guard.prog, guard.kernel, buildLog)){
-        r.error = std::string("build failed: ") + buildLog;
+    // Get or build cached kernel
+    auto cachedKernel = get_or_build_kernel(source, entry);
+    if(!cachedKernel){
+        r.error = "build failed";
         return finish(r);
     }
 
-    guard.queue = queue; // not owned, just for clarity (do not release)
+    cl_program prog = cachedKernel->kernel.program;
+    cl_kernel kernel = cachedKernel->kernel.kernel;
+
+    // Thread-safe queue usage
+    std::lock_guard<std::mutex> qlock(queue_mutex_);
 
     cl_int err = CL_SUCCESS;
     int argIndex = 0;
 
     std::cerr << "[OpenCL] Setting kernel arguments..." << std::endl;
 
-    // Set uniform args first (standardized ordering: uniforms, then inputs, then outputs)
+    // Set uniform args first
     for(size_t i=0;i<uniforms.size();++i){
         uint64_t u = uniforms[i];
-        int intVal = static_cast<int>(u);  // Convert uint64_t to int for kernel
+        int intVal = static_cast<int>(u);
         std::cerr << "[OpenCL] Setting uniform arg " << i << " = " << u << " (as int: " << intVal << ")" << std::endl;
-        err = clSetKernelArg(guard.kernel, argIndex++, sizeof(int), &intVal);
+        err = clSetKernelArg(kernel, argIndex++, sizeof(int), &intVal);
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clSetKernelArg uniform failed with error: " << err << std::endl;
+            clReleaseProgram(prog);
+            clReleaseKernel(kernel);
             r.error = "clSetKernelArg uniform failed";
             return finish(r);
         }
     }
 
-    // Create input buffers and set kernel args for them
+    // Create input buffers
     std::cerr << "[OpenCL] Creating input buffers..." << std::endl;
-    guard.inBufs.resize(inputs.size(), nullptr);
+    std::vector<cl_mem> inBufs(inputs.size(), nullptr);
     for(size_t i=0;i<inputs.size();++i){
         std::cerr << "[OpenCL] Creating input buffer " << i << " with size " << inputs[i].size() << std::endl;
-        guard.inBufs[i] = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, inputs[i].size(), (void*)inputs[i].data(), &err);
+        inBufs[i] = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, inputs[i].size(), (void*)inputs[i].data(), &err);
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clCreateBuffer input failed with error: " << err << std::endl;
+            for(size_t j=0; j<i; ++j) if(inBufs[j]) clReleaseMemObject(inBufs[j]);
+            clReleaseProgram(prog);
+            clReleaseKernel(kernel);
             r.error = "clCreateBuffer input failed";
             return finish(r);
         }
         std::cerr << "[OpenCL] Setting input buffer arg " << argIndex << std::endl;
-        err = clSetKernelArg(guard.kernel, argIndex++, sizeof(cl_mem), &guard.inBufs[i]);
+        err = clSetKernelArg(kernel, argIndex++, sizeof(cl_mem), &inBufs[i]);
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clSetKernelArg input failed with error: " << err << std::endl;
+            for(auto m: inBufs) if(m) clReleaseMemObject(m);
+            clReleaseProgram(prog);
+            clReleaseKernel(kernel);
             r.error = "clSetKernelArg input failed";
             return finish(r);
         }
     }
 
-    // Create output buffers and set kernel args for them
+    // Create output buffers
     std::cerr << "[OpenCL] Creating output buffers..." << std::endl;
-    guard.outBufs.resize(outputSizes.size(), nullptr);
+    std::vector<cl_mem> outBufs(outputSizes.size(), nullptr);
     for(size_t i=0;i<outputSizes.size();++i){
         std::cerr << "[OpenCL] Creating output buffer " << i << " with size " << outputSizes[i] << std::endl;
-        guard.outBufs[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, outputSizes[i], nullptr, &err);
+        outBufs[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, outputSizes[i], nullptr, &err);
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clCreateBuffer output failed with error: " << err << std::endl;
+            for(auto m: inBufs) if(m) clReleaseMemObject(m);
+            for(size_t j=0; j<i; ++j) if(outBufs[j]) clReleaseMemObject(outBufs[j]);
+            clReleaseProgram(prog);
+            clReleaseKernel(kernel);
             r.error = "clCreateBuffer output failed";
             return finish(r);
         }
         std::cerr << "[OpenCL] Setting output buffer arg " << argIndex << std::endl;
-        err = clSetKernelArg(guard.kernel, argIndex++, sizeof(cl_mem), &guard.outBufs[i]);
+        err = clSetKernelArg(kernel, argIndex++, sizeof(cl_mem), &outBufs[i]);
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clSetKernelArg output failed with error: " << err << std::endl;
+            for(auto m: inBufs) if(m) clReleaseMemObject(m);
+            for(auto m: outBufs) if(m) clReleaseMemObject(m);
+            clReleaseProgram(prog);
+            clReleaseKernel(kernel);
             r.error = "clSetKernelArg output failed";
             return finish(r);
         }
     }
 
-    // Global/local sizes (default 1D with 3 entries)
+    // Global/local sizes
     std::vector<size_t> global = {1,1,1}, local = {1,1,1};
     if(task.contains("global") && task["global"].is_array()){
         auto a=task["global"]; for(size_t i=0;i<a.size()&&i<3;i++) global[i]=a[i].get<size_t>();
@@ -257,9 +294,13 @@ ExecResult OpenCLExecutor::run_task(const json& task){
     std::cerr << "[OpenCL] Local work size: [" << local[0] << ", " << local[1] << ", " << local[2] << "]" << std::endl;
 
     std::cerr << "[OpenCL] Enqueuing kernel execution..." << std::endl;
-    err = clEnqueueNDRangeKernel(queue, guard.kernel, 3, nullptr, global.data(), local.data(), 0, nullptr, nullptr);
+    err = clEnqueueNDRangeKernel(queue, kernel, 3, nullptr, global.data(), local.data(), 0, nullptr, nullptr);
     if(err!=CL_SUCCESS){
         std::cerr << "[OpenCL] clEnqueueNDRangeKernel failed with error: " << err << std::endl;
+        for(auto m: inBufs) if(m) clReleaseMemObject(m);
+        for(auto m: outBufs) if(m) clReleaseMemObject(m);
+        clReleaseProgram(prog);
+        clReleaseKernel(kernel);
         r.error = "clEnqueueNDRangeKernel failed";
         return finish(r);
     }
@@ -270,26 +311,42 @@ ExecResult OpenCLExecutor::run_task(const json& task){
 
     // Read outputs back
     std::cerr << "[OpenCL] Reading output buffers..." << std::endl;
-    r.outputs.resize(guard.outBufs.size());
-    for(size_t i=0;i<guard.outBufs.size();++i){
+    r.outputs.resize(outBufs.size());
+    for(size_t i=0;i<outBufs.size();++i){
         std::cerr << "[OpenCL] Reading output buffer " << i << " with size " << outputSizes[i] << std::endl;
         r.outputs[i].resize(outputSizes[i]);
-        err = clEnqueueReadBuffer(queue, guard.outBufs[i], CL_TRUE, 0, outputSizes[i], r.outputs[i].data(), 0, nullptr, nullptr);
+        err = clEnqueueReadBuffer(queue, outBufs[i], CL_TRUE, 0, outputSizes[i], r.outputs[i].data(), 0, nullptr, nullptr);
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clEnqueueReadBuffer failed with error: " << err << std::endl;
+            for(auto m: inBufs) if(m) clReleaseMemObject(m);
+            for(auto m: outBufs) if(m) clReleaseMemObject(m);
+            clReleaseProgram(prog);
+            clReleaseKernel(kernel);
             r.error = "clEnqueueReadBuffer failed";
             return finish(r);
         }
     }
+
+    // Cleanup buffers only (kernel/program stay cached)
+    for(auto m: inBufs) if(m) clReleaseMemObject(m);
+    for(auto m: outBufs) if(m) clReleaseMemObject(m);
+    clReleaseProgram(prog);
+    clReleaseKernel(kernel);
 
     std::cerr << "[OpenCL] Task execution completed successfully!" << std::endl;
     r.ok = true;
     return finish(r);
 }
 
+OpenCLExecutor::~OpenCLExecutor() {
+    if(queue) clReleaseCommandQueue(queue);
+    if(context) clReleaseContext(context);
+}
+
 #else
 
 bool OpenCLExecutor::initialize(const json& cfg){ (void)cfg; return false; }
 ExecResult OpenCLExecutor::run_task(const json& task){ (void)task; return ExecResult{false,{},0.0,"OpenCL disabled"}; }
+OpenCLExecutor::~OpenCLExecutor() {}
 
 #endif
