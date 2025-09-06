@@ -29,8 +29,27 @@ WebSocketClient::~WebSocketClient() {
 
 bool WebSocketClient::connect(const std::string& host, const std::string& port, const std::string& target, bool use_ssl) {
     try {
-        // Resolve hostname
-        auto const results = resolver.resolve(host, port);
+        // Resolve hostname with better error handling
+        boost::system::error_code ec;
+        auto results = resolver.resolve(host, port, ec);
+
+        if (ec) {
+            std::cerr << "DNS resolution failed for " << host << ":" << port << " - " << ec.message() << std::endl;
+
+            // Try fallback for localhost addresses
+            if (host == "127.0.0.1" || host == "localhost") {
+                std::cerr << "Trying fallback resolution for localhost..." << std::endl;
+                // Try resolving with different approach - use the modern API
+                results = resolver.resolve(tcp::v4(), host, port, ec);
+                if (ec) {
+                    std::cerr << "Fallback DNS resolution also failed: " << ec.message() << std::endl;
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
         use_ssl_connection = use_ssl;
 
         if (use_ssl) {

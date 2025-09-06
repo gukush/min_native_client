@@ -64,6 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvulkan1 mesa-vulkan-drivers \
     ocl-icd-libopencl1 pocl-opencl-icd clinfo \
     python3 \
+    dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
 # FIXED: Set VCPKG_TRIPLET in runtime stage

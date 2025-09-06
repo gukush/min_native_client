@@ -28,7 +28,7 @@ ServerBinaryClient::~ServerBinaryClient() {
 std::tuple<std::string,std::string> ServerBinaryClient::split_host_port(const std::string& url){
     std::string s;
     std::string default_port = "443";
-    
+
     if(url.find("wss://") == 0) {
         s = url.substr(6);
         default_port = "443";
@@ -40,7 +40,13 @@ std::tuple<std::string,std::string> ServerBinaryClient::split_host_port(const st
         s = url;
         default_port = "80";
     }
-    
+
+    // Remove path part if present (everything after the first '/')
+    auto path_pos = s.find('/');
+    if(path_pos != std::string::npos) {
+        s = s.substr(0, path_pos);
+    }
+
     auto pos = s.find(':');
     if(pos==std::string::npos) return {s, default_port};
     return {s.substr(0,pos), s.substr(pos+1)};
@@ -50,7 +56,28 @@ bool ServerBinaryClient::connect(const std::string& url){
     auto [host,port] = split_host_port(url);
     // Determine if we should use SSL based on the URL scheme
     bool use_ssl = (url.find("wss://") == 0);
+
+    // Try connecting with the original host first
     bool connected = ws_->connect(host, port, "/ws-native", use_ssl);
+
+    // If connection failed and we're trying to connect to localhost/127.0.0.1,
+    // try alternative approaches
+    if (!connected && (host == "127.0.0.1" || host == "localhost")) {
+        std::cout << "[client] Connection failed, trying alternative host resolution..." << std::endl;
+
+        // Try with host.docker.internal (if available)
+        if (host == "127.0.0.1") {
+            std::cout << "[client] Trying host.docker.internal..." << std::endl;
+            connected = ws_->connect("host.docker.internal", port, "/ws-native", use_ssl);
+        }
+
+        // If still failed, try with the actual host IP
+        if (!connected) {
+            std::cout << "[client] Trying to resolve host IP directly..." << std::endl;
+            // For now, just try the original host again with different resolver settings
+            connected = ws_->connect(host, port, "/ws-native", use_ssl);
+        }
+    }
 
     if (connected) {
         // Send client registration message after successful connection
@@ -133,10 +160,17 @@ void ServerBinaryClient::process_chunk_concurrent(const json& c){
 
 void ServerBinaryClient::process_workload_concurrent(const json& w){
     auto res = bin_->execute(w);
+
+    // Clean up artifacts after workload completion
+    std::string workload_id = w.value("id", "");
+    if (!workload_id.empty()) {
+        bin_->cleanup_task_artifacts(workload_id);
+    }
+
     nlohmann::json reply = {
         {"type","workload:done"},
         {"data",{
-            {"id", w.value("id","")},
+            {"id", workload_id},
             {"result", res.ok && !res.outputs.empty() ? base64_encode(res.outputs[0]) : ""},
             {"processingTime", res.ms}
         }}

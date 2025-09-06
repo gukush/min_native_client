@@ -1,11 +1,15 @@
 
 #include "binary_executor.hpp"
+#include "base64.hpp"
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <iostream>
 #include <cstring>
 #include <chrono>
+#include <fstream>
+#include <filesystem>
+#include <sys/stat.h>
 
 static std::vector<std::string> get_args(const nlohmann::json& j){
     std::vector<std::string> a;
@@ -15,10 +19,61 @@ static std::vector<std::string> get_args(const nlohmann::json& j){
     return a;
 }
 
+BinaryExecutor::BinaryExecutor() {
+    // Set up base cache directory
+    const char* home = getenv("HOME");
+    if (home) {
+        base_cache_dir_ = std::string(home) + "/.cache/volunteer";
+    } else {
+        base_cache_dir_ = "/tmp/volunteer";
+    }
+
+    // Create base cache directory if it doesn't exist
+    std::filesystem::create_directories(base_cache_dir_);
+    std::cout << "[BinaryExecutor] Cache directory: " << base_cache_dir_ << std::endl;
+}
+
+BinaryExecutor::~BinaryExecutor() {
+    // Clean up all task artifacts
+    for (const auto& [task_id, temp_dir] : task_artifacts_) {
+        try {
+            std::filesystem::remove_all(temp_dir);
+            std::cout << "[BinaryExecutor] Cleaned up task artifacts for " << task_id << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[BinaryExecutor] Error cleaning up " << task_id << ": " << e.what() << std::endl;
+        }
+    }
+}
+
 ExecResult BinaryExecutor::run_task(const json& task){
     ExecResult r;
-    std::string exe = task.value("executable","");
-    if(exe.empty()){ r.error="no executable"; return r; }
+
+    // Handle artifacts if this is a workload:new message
+    if (task.contains("artifacts") && task["artifacts"].is_array()) {
+        handle_workload_artifacts(task);
+    }
+
+    // Determine executable path
+    std::string exe;
+    std::string task_id = task.value("id", "");
+
+    // Check if this is a chunk with specific program in meta
+    if (task.contains("meta") && task["meta"].contains("program")) {
+        std::string program_name = task["meta"]["program"];
+        exe = get_binary_path(program_name, task_id);
+    } else if (task.contains("program")) {
+        // Fall back to workload program
+        std::string program_name = task["program"];
+        exe = get_binary_path(program_name, task_id);
+    } else {
+        // Legacy: direct executable path
+        exe = task.value("executable", "");
+    }
+
+    if(exe.empty()){
+        r.error="no executable found";
+        return r;
+    }
 
     std::vector<uint8_t> stdin_data;
     if(task.contains("stdin") && task["stdin"].is_string()){
@@ -78,4 +133,148 @@ ExecResult BinaryExecutor::run_task(const json& task){
         r.error="fork failed";
         return r;
     }
+}
+
+void BinaryExecutor::handle_workload_artifacts(const json& workload) {
+    std::string task_id = workload.value("id", "");
+    if (task_id.empty()) {
+        std::cerr << "[BinaryExecutor] No task ID in workload artifacts" << std::endl;
+        return;
+    }
+
+    // Create task directory
+    std::string task_dir = create_task_directory(task_id);
+    if (task_dir.empty()) {
+        std::cerr << "[BinaryExecutor] Failed to create task directory for " << task_id << std::endl;
+        return;
+    }
+
+    // Process each artifact
+    const auto& artifacts = workload["artifacts"];
+    for (const auto& artifact : artifacts) {
+        write_artifact(task_id, artifact);
+    }
+
+    std::cout << "[BinaryExecutor] Processed " << artifacts.size() << " artifacts for task " << task_id << std::endl;
+}
+
+void BinaryExecutor::cleanup_task_artifacts(const std::string& task_id) {
+    auto it = task_artifacts_.find(task_id);
+    if (it != task_artifacts_.end()) {
+        try {
+            std::filesystem::remove_all(it->second);
+            std::cout << "[BinaryExecutor] Cleaned up artifacts for task " << task_id << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[BinaryExecutor] Error cleaning up task " << task_id << ": " << e.what() << std::endl;
+        }
+        task_artifacts_.erase(it);
+    }
+}
+
+std::string BinaryExecutor::get_binary_path(const std::string& program_name, const std::string& task_id) {
+    // First check if we have a cached path for this program
+    auto it = program_paths_.find(program_name);
+    if (it != program_paths_.end()) {
+        return it->second;
+    }
+
+    // If we have a task_id, look in the task's artifact directory
+    if (!task_id.empty()) {
+        auto task_it = task_artifacts_.find(task_id);
+        if (task_it != task_artifacts_.end()) {
+            std::string task_dir = task_it->second;
+            std::string exe_path = task_dir + "/" + program_name;
+
+            // Check if the executable exists
+            if (std::filesystem::exists(exe_path) && std::filesystem::is_regular_file(exe_path)) {
+                program_paths_[program_name] = exe_path;
+                return exe_path;
+            }
+        }
+    }
+
+    // Fall back to system PATH
+    return program_name;
+}
+
+std::string BinaryExecutor::create_task_directory(const std::string& task_id) {
+    std::string task_dir = base_cache_dir_ + "/" + task_id;
+
+    try {
+        std::filesystem::create_directories(task_dir);
+        task_artifacts_[task_id] = task_dir;
+        return task_dir;
+    } catch (const std::exception& e) {
+        std::cerr << "[BinaryExecutor] Failed to create task directory " << task_dir << ": " << e.what() << std::endl;
+        return "";
+    }
+}
+
+void BinaryExecutor::write_artifact(const std::string& task_id, const json& artifact) {
+    auto task_it = task_artifacts_.find(task_id);
+    if (task_it == task_artifacts_.end()) {
+        std::cerr << "[BinaryExecutor] No task directory for " << task_id << std::endl;
+        return;
+    }
+
+    std::string task_dir = task_it->second;
+    std::string name = artifact.value("name", "");
+    std::string type = artifact.value("type", "binary");
+    bool is_executable = artifact.value("exec", false);
+
+    if (name.empty()) {
+        std::cerr << "[BinaryExecutor] Artifact missing name" << std::endl;
+        return;
+    }
+
+    std::string file_path = task_dir + "/" + name;
+
+    try {
+        if (type == "text" && artifact.contains("content")) {
+            // Text file
+            std::string content = artifact["content"];
+            std::ofstream file(file_path);
+            file << content;
+            file.close();
+        } else if (artifact.contains("bytes")) {
+            // Binary file (base64 encoded)
+            std::string base64_data = artifact["bytes"];
+            std::vector<uint8_t> binary_data = base64_decode(base64_data);
+
+            std::ofstream file(file_path, std::ios::binary);
+            file.write(reinterpret_cast<const char*>(binary_data.data()), binary_data.size());
+            file.close();
+        } else {
+            std::cerr << "[BinaryExecutor] Unknown artifact type or missing data for " << name << std::endl;
+            return;
+        }
+
+        // Make executable if specified
+        if (is_executable) {
+            make_executable(file_path);
+        }
+
+        // Cache the path if it's an executable
+        if (is_executable) {
+            program_paths_[name] = file_path;
+        }
+
+        std::cout << "[BinaryExecutor] Wrote artifact " << name << " to " << file_path << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[BinaryExecutor] Error writing artifact " << name << ": " << e.what() << std::endl;
+    }
+}
+
+void BinaryExecutor::make_executable(const std::string& file_path) {
+#ifdef _WIN32
+    // On Windows, we don't need to set executable permissions
+    // The file extension (.exe) is what matters
+#else
+    // On POSIX systems, set executable permissions
+    struct stat st;
+    if (stat(file_path.c_str(), &st) == 0) {
+        chmod(file_path.c_str(), st.st_mode | S_IXUSR | S_IXGRP | S_IXOTH);
+    }
+#endif
 }
