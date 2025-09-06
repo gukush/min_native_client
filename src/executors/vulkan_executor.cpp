@@ -476,6 +476,8 @@ ExecResult VulkanExecutor::run_task(const json& task){
 }
 
 #else
+VulkanExecutor::VulkanExecutor() {}
+VulkanExecutor::~VulkanExecutor() {}
 bool VulkanExecutor::initialize(const json& cfg){ (void)cfg; return false; }
 ExecResult VulkanExecutor::run_task(const json& task){ (void)task; return ExecResult{false,{},0.0,"Vulkan disabled"}; }
 #endif
