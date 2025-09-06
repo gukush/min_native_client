@@ -131,9 +131,9 @@ void ServerBinaryClient::run(){
 void ServerBinaryClient::handle_message(const json& j){
     auto type = j.value("type", std::string());
     auto data = j.value("data", json::object());
-    
+
     std::cout << "[client] Received message type: " << type << std::endl;
-    
+
     if(type=="workload:new"){
         handle_workload(data);
     } else if(type=="chunk:assign"){
@@ -179,9 +179,9 @@ void ServerBinaryClient::process_chunk_concurrent(const json& c){
     int replica = c.value("replica", 0);
     auto payload = c.value("payload", json::object());
     auto meta = c.value("meta", json::object());
-    
+
     std::cout << "[client] Processing chunk " << chunkId << " (replica " << replica << ") for task " << taskId << std::endl;
-    
+
     // Convert server payload format to binary executor format
     json chunk_task = {
         {"id", chunkId},
@@ -190,22 +190,50 @@ void ServerBinaryClient::process_chunk_concurrent(const json& c){
         {"meta", meta}
     };
     
+    // Set the program name for binary execution
+    if (meta.contains("program")) {
+        chunk_task["program"] = meta["program"];
+    }
+
     // Handle payload buffers if present
     if (payload.contains("buffers") && payload["buffers"].is_array()) {
         // Convert buffers to stdin format for binary executor
         std::string stdin_data;
-        for (const auto& buffer : payload["buffers"]) {
+        std::cout << "[client] Processing " << payload["buffers"].size() << " buffers" << std::endl;
+        for (size_t i = 0; i < payload["buffers"].size(); i++) {
+            const auto& buffer = payload["buffers"][i];
+            std::cout << "[client] Buffer " << i << " type: " << buffer.type_name() << std::endl;
             if (buffer.is_string()) {
-                // Assume base64 encoded
-                std::vector<uint8_t> decoded = base64_decode(buffer.get<std::string>());
+                // Assume base64 encoded (legacy format)
+                std::string base64_str = buffer.get<std::string>();
+                std::cout << "[client] Buffer " << i << " is base64 string, length: " << base64_str.length() << std::endl;
+                std::vector<uint8_t> decoded = base64_decode(base64_str);
+                std::cout << "[client] Decoded buffer " << i << " to " << decoded.size() << " bytes" << std::endl;
                 stdin_data.append(reinterpret_cast<const char*>(decoded.data()), decoded.size());
+            } else if (buffer.is_array()) {
+                // Handle raw byte array (new format)
+                std::cout << "[client] Buffer " << i << " is array, size: " << buffer.size() << std::endl;
+                for (const auto& byte : buffer) {
+                    if (byte.is_number()) {
+                        stdin_data.push_back(static_cast<char>(byte.get<uint8_t>()));
+                    }
+                }
+            } else {
+                std::cout << "[client] Buffer " << i << " is unknown type: " << buffer.type_name() << std::endl;
+                std::cout << "[client] Buffer " << i << " content: " << buffer.dump() << std::endl;
             }
         }
+        std::cout << "[client] Total stdin data size: " << stdin_data.size() << " bytes" << std::endl;
         if (!stdin_data.empty()) {
             chunk_task["stdin"] = stdin_data;
         }
     }
-    
+
+    // Add backend information to meta if available
+    if (meta.contains("backend")) {
+        chunk_task["meta"]["backend"] = meta["backend"];
+    }
+
     auto res = bin_->execute(chunk_task);
     nlohmann::json arr = nlohmann::json::array();
     std::string combined_checksum;
@@ -245,17 +273,17 @@ void ServerBinaryClient::process_chunk_concurrent(const json& c){
 void ServerBinaryClient::process_workload_concurrent(const json& w){
     std::string workload_id = w.value("id", "");
     std::cout << "[client] Processing workload " << workload_id << std::endl;
-    
+
     // Handle artifacts if present (this is the binary and input files)
     if (w.contains("artifacts") && w["artifacts"].is_array()) {
         std::cout << "[client] Processing " << w["artifacts"].size() << " artifacts for workload " << workload_id << std::endl;
         bin_->handle_workload_artifacts(w);
     }
-    
+
     // For native-block-matmul-flex strategy, we don't execute the workload directly
     // Instead, we wait for individual chunks to be assigned
     std::cout << "[client] Workload " << workload_id << " artifacts processed, waiting for chunks..." << std::endl;
-    
+
     // Send acknowledgment that we're ready to process chunks
     nlohmann::json reply = {
         {"type","workload:ready"},
@@ -264,7 +292,7 @@ void ServerBinaryClient::process_workload_concurrent(const json& w){
             {"status", "ready"}
         }}
     };
-    
+
     ws_->send_json(reply);
     std::cout << "[client] Sent workload ready acknowledgment for " << workload_id << std::endl;
 }

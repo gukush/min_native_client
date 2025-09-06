@@ -338,7 +338,7 @@ void WebSocketClient::runEventLoop() {
                     if (onWorkloadAssigned) {
                         onWorkloadAssigned(eventData);
                     }
-                } else if (eventType == "workload:chunk_assign") {
+                } else if (eventType == "chunk:assign") {
                     if (onChunkAssigned) {
                         onChunkAssigned(eventData);
                     }

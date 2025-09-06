@@ -10,6 +10,7 @@
 #include <fstream>
 #include <filesystem>
 #include <sys/stat.h>
+extern char **environ;
 
 static std::vector<std::string> get_args(const nlohmann::json& j){
     std::vector<std::string> a;
@@ -75,19 +76,54 @@ ExecResult BinaryExecutor::run_task(const json& task){
         return r;
     }
 
+    // Handle chunked data for block matmul
     std::vector<uint8_t> stdin_data;
     if(task.contains("stdin") && task["stdin"].is_string()){
-        // Assume base64 in upstream, but here we expect raw for simplicity
-        // Accept raw hex-like strings? keep raw minimal
+        // Raw binary data from stdin
         auto s = task["stdin"].get<std::string>();
         stdin_data.assign(s.begin(), s.end());
     }
 
-    auto args = get_args(task);
+    // Build command line arguments for the binary
+    std::vector<std::string> arg_strings;
+
+    // Add matrix dimensions from meta if available
+    if (task.contains("meta")) {
+        auto meta = task["meta"];
+        if (meta.contains("uniforms") && meta["uniforms"].is_array()) {
+            auto uniforms = meta["uniforms"];
+            if (uniforms.size() >= 3) {
+                // uniforms: [rows, K, cols]
+                arg_strings.push_back("--rows");
+                arg_strings.push_back(std::to_string(uniforms[0].get<int>()));
+                arg_strings.push_back("--k");
+                arg_strings.push_back(std::to_string(uniforms[1].get<int>()));
+                arg_strings.push_back("--cols");
+                arg_strings.push_back(std::to_string(uniforms[2].get<int>()));
+            }
+        }
+
+        // Add backend information
+        if (meta.contains("backend")) {
+            arg_strings.push_back("--backend");
+            arg_strings.push_back(meta["backend"].get<std::string>());
+        }
+    }
+
+    // Add any additional args from task
+    auto additional_args = get_args(task);
+    arg_strings.insert(arg_strings.end(), additional_args.begin(), additional_args.end());
+
+    // Convert to char* array for execve
     std::vector<char*> argv;
     argv.push_back(const_cast<char*>(exe.c_str()));
-    for(auto& a: args) argv.push_back(const_cast<char*>(a.c_str()));
+    for(auto& a: arg_strings) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
+
+    // Debug: print the command being executed
+    std::cout << "[BinaryExecutor] Executing: " << exe;
+    for(auto& a: arg_strings) std::cout << " " << a;
+    std::cout << std::endl;
 
     int inpipe[2], outpipe[2];
 	if (pipe(inpipe) == -1 || pipe(outpipe) == -1) {
@@ -96,12 +132,19 @@ ExecResult BinaryExecutor::run_task(const json& task){
 	}
 
     auto t0 = std::chrono::high_resolution_clock::now();
+
+    // Debug: print the executable path
+    std::cout << "[BinaryExecutor] Attempting to execute: " << exe << std::endl;
+    std::cout << "[BinaryExecutor] Working directory: " << std::filesystem::current_path() << std::endl;
+    std::cout << "[BinaryExecutor] File exists: " << std::filesystem::exists(exe) << std::endl;
+    std::cout << "[BinaryExecutor] Is regular file: " << std::filesystem::is_regular_file(exe) << std::endl;
+
     pid_t pid = fork();
     if(pid==0){
         dup2(inpipe[0], STDIN_FILENO);
         dup2(outpipe[1], STDOUT_FILENO);
         close(inpipe[1]); close(outpipe[0]);
-        execve(exe.c_str(), argv.data(), nullptr);
+        execve(exe.c_str(), argv.data(), environ);
         std::perror("execve");
         _exit(127);
     } else if(pid>0){
