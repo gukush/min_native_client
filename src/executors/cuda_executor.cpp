@@ -37,7 +37,8 @@ bool CudaExecutor::initialize(const json& cfg){
     int cnt=0; if(!check(cuDeviceGetCount(&cnt),"cuDeviceGetCount")) return false;
     if(cnt<=0){ std::cerr<<"no cuda devices"<<std::endl; return false; }
     CUdevice dev; if(!check(cuDeviceGet(&dev, devId),"cuDeviceGet")) return false;
-    if(!check(cuCtxCreate(&ctx, 0, dev),"cuCtxCreate")) return false;
+    if(!check(cuDevicePrimaryCtxRetain(&ctx, dev), "cuDevicePrimaryCtxRetain")) return false;
+    if(!check(cuCtxSetCurrent(ctx), "cuCtxSetCurrent")) return false;
     std::cout << "[CUDA] Executor initialized with kernel cache (size: " << kernel_cache_.size() << ")" << std::endl;
     return true;
 }
@@ -46,7 +47,7 @@ bool CudaExecutor::compileNVRTC(const std::string& src, const std::string& entry
     (void)entry;
     nvrtcProgram prog=nullptr;
     if(!checkNVRTC(nvrtcCreateProgram(&prog, src.c_str(), "k.cu", 0, nullptr, nullptr), "nvrtcCreateProgram")) return false;
-    
+
     int major=0, minor=0;
     {
         CUdevice dev;
@@ -54,7 +55,7 @@ bool CudaExecutor::compileNVRTC(const std::string& src, const std::string& entry
         if(!check(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev), "cuDeviceGetAttribute(major)")) { nvrtcDestroyProgram(&prog); return false; }
         if(!check(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev), "cuDeviceGetAttribute(minor)")) { nvrtcDestroyProgram(&prog); return false; }
     }
-    
+
     std::string archOpt = std::string("--gpu-architecture=compute_") + std::to_string(major) + std::to_string(minor);
     const char* opts[] = {"--std=c++14", archOpt.c_str()};
     auto r = nvrtcCompileProgram(prog, int(std::size(opts)), opts);
@@ -62,33 +63,33 @@ bool CudaExecutor::compileNVRTC(const std::string& src, const std::string& entry
     size_t logSize=0; nvrtcGetProgramLogSize(prog, &logSize);
     if(logSize>1){ std::string log; log.resize(logSize); nvrtcGetProgramLog(prog, log.data()); std::cout << log << std::endl; }
     if(!checkNVRTC(r,"nvrtcCompileProgram")){ nvrtcDestroyProgram(&prog); return false; }
-    
+
     size_t ptxSize=0; nvrtcGetPTXSize(prog,&ptxSize); ptx.resize(ptxSize); nvrtcGetPTX(prog, ptx.data());
     nvrtcDestroyProgram(&prog);
     return true;
 }
 
-std::shared_ptr<KernelCache<CudaExecutor::CudaKernel>::CachedKernel> 
+std::shared_ptr<KernelCache<CudaExecutor::CudaKernel>::CachedKernel>
 CudaExecutor::get_or_compile_kernel(const std::string& src, const std::string& entry) {
     std::string key = KernelCache<CudaKernel>::computeHash(src + entry);
-    
+
     auto cached = kernel_cache_.get(key);
     if(cached) {
         std::cout << "[CUDA] Using cached kernel for entry: " << entry << std::endl;
         return cached;
     }
-    
+
     std::cout << "[CUDA] Compiling new kernel for entry: " << entry << std::endl;
     std::string ptx;
     if(!compileNVRTC(src, entry, ptx)) {
         return nullptr;
     }
-    
+
     auto kernel = std::make_shared<KernelCache<CudaKernel>::CachedKernel>();
     kernel->kernel.ptx = ptx;
     kernel->kernel.entry = entry;
     kernel->lastUsed = std::chrono::steady_clock::now();
-    
+
     kernel_cache_.put(key, kernel);
     std::cout << "[CUDA] Kernel cached (cache size: " << kernel_cache_.size() << ")" << std::endl;
     return kernel;
@@ -103,7 +104,7 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
 
     CUcontext pushed = nullptr;
     if(!check(cuCtxPushCurrent(ctx), "cuCtxPushCurrent")) return false;
-    
+
     auto pop_ctx = [&](){
         CUcontext dummy=nullptr;
         cuCtxPopCurrent(&dummy);
@@ -139,10 +140,10 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         return false;
     }
 
-    if(!check(cuModuleGetFunction(&fun, mod, entry.c_str()), "cuModuleGetFunction")){ 
-        cuModuleUnload(mod); 
+    if(!check(cuModuleGetFunction(&fun, mod, entry.c_str()), "cuModuleGetFunction")){
+        cuModuleUnload(mod);
         pop_ctx();
-        return false; 
+        return false;
     }
 
     std::vector<CUdeviceptr> dIn(inputs.size());
@@ -160,7 +161,7 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
             return false;
         }
     }
-    
+
     std::vector<CUdeviceptr> dOut(outputSizes.size());
     for(size_t i=0;i<outputSizes.size();++i){
         if(!check(cuMemAlloc(&dOut[i], outputSizes[i]),"cuMemAlloc(out)")) {
@@ -189,24 +190,24 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         pop_ctx();
         return false;
     }
-    
-    if(!check(cuCtxSynchronize(), "cuCtxSynchronize")){ 
+
+    if(!check(cuCtxSynchronize(), "cuCtxSynchronize")){
         for(auto d: dIn) cuMemFree(d);
         for(auto d: dOut) cuMemFree(d);
         cuModuleUnload(mod);
         pop_ctx();
-        return false; 
+        return false;
     }
 
     outputs.resize(dOut.size());
     for(size_t i=0;i<dOut.size();++i){
         outputs[i].resize(outputSizes[i]);
-        if(!check(cuMemcpyDtoH(outputs[i].data(), dOut[i], outputSizes[i]), "cuMemcpyDtoH")){ 
+        if(!check(cuMemcpyDtoH(outputs[i].data(), dOut[i], outputSizes[i]), "cuMemcpyDtoH")){
             for(auto d: dIn) cuMemFree(d);
             for(auto d: dOut) cuMemFree(d);
             cuModuleUnload(mod);
             pop_ctx();
-            return false; 
+            return false;
         }
         cuMemFree(dOut[i]);
     }
@@ -220,10 +221,10 @@ ExecResult CudaExecutor::run_task(const json& task){
     ExecResult r;
     std::cout << "[CUDA] Task JSON: " << task.dump(2) << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
-    
+
     std::string src = task.value("source","");
     std::string entry = task.value("entry","main");
-    
+
     std::vector<uint64_t> uniforms;
     if(task.contains("uniforms") && task["uniforms"].is_array()){
         for(auto& v: task["uniforms"]){
@@ -232,7 +233,7 @@ ExecResult CudaExecutor::run_task(const json& task){
             else if(v.is_number_float()){ double d=v.get<double>(); uint64_t u; std::memcpy(&u,&d,sizeof(double)); uniforms.push_back(u); }
         }
     }
-    
+
     std::vector<std::vector<uint8_t>> inputs;
     if(task.contains("inputs") && task["inputs"].is_array()){
         for(auto& it: task["inputs"]){
@@ -241,28 +242,28 @@ ExecResult CudaExecutor::run_task(const json& task){
             inputs.push_back(base64_decode(b64));
         }
     }
-    
+
     std::vector<size_t> outputSizes;
     if(task.contains("outputSizes") && task["outputSizes"].is_array()){
         for(auto& x: task["outputSizes"]) if(x.is_number_unsigned()) outputSizes.push_back(x.get<size_t>());
     }
-    
+
     std::vector<int> grid = task.value("grid", std::vector<int>{1,1,1});
     std::vector<int> block = task.value("block", std::vector<int>{16,16,1});
 
     // Use cached kernel if available
     auto cached_kernel = get_or_compile_kernel(src, entry);
-    if(!cached_kernel){ 
-        r.error="compile failed"; 
-        return r; 
+    if(!cached_kernel){
+        r.error="compile failed";
+        return r;
     }
-    
+
     std::vector<std::vector<uint8_t>> outputs;
-    if(!launch(cached_kernel->kernel.ptx, entry, uniforms, inputs, outputSizes, grid, block, outputs)){ 
-        r.error="launch failed"; 
-        return r; 
+    if(!launch(cached_kernel->kernel.ptx, entry, uniforms, inputs, outputSizes, grid, block, outputs)){
+        r.error="launch failed";
+        return r;
     }
-    
+
     auto t1 = std::chrono::high_resolution_clock::now();
     r.ms = std::chrono::duration<double, std::milli>(t1-t0).count();
     r.ok = true;
@@ -272,7 +273,7 @@ ExecResult CudaExecutor::run_task(const json& task){
 
 CudaExecutor::~CudaExecutor(){
     if(ctx) {
-        cuCtxDestroy(ctx);
+        cuDevicePrimaryCtxRelease(dev);
     }
 }
 
