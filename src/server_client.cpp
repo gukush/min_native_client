@@ -3,8 +3,26 @@
 #include "base64.hpp"
 #include <iostream>
 #include <thread>
+#include <openssl/sha.h>
+#include <sstream>
+#include <iomanip>
 
 using json = nlohmann::json;
+
+// Helper function to calculate SHA256 checksum of binary data
+std::string calculate_checksum(const std::vector<uint8_t>& data) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX sha256;
+    SHA256_Init(&sha256);
+    SHA256_Update(&sha256, data.data(), data.size());
+    SHA256_Final(hash, &sha256);
+
+    std::stringstream ss;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+    }
+    return ss.str();
+}
 
 ServerBinaryClient::ServerBinaryClient(bool insecure, int concurrency)
     : max_concurrency_(concurrency) {
@@ -113,12 +131,26 @@ void ServerBinaryClient::run(){
 void ServerBinaryClient::handle_message(const json& j){
     auto type = j.value("type", std::string());
     auto data = j.value("data", json::object());
+    
+    std::cout << "[client] Received message type: " << type << std::endl;
+    
     if(type=="workload:new"){
         handle_workload(data);
-    } else if(type=="workload:chunk_assign"){
+    } else if(type=="chunk:assign"){
         handle_chunk(data);
+    } else if(type=="workload:ready"){
+        // Server indicates workload is ready, we can start processing
+        std::cout << "[client] Workload ready, starting processing..." << std::endl;
+    } else if(type=="client:join:ack"){
+        std::cout << "[client] Client join acknowledged" << std::endl;
+    } else if(type=="welcome"){
+        std::cout << "[client] Server welcome: " << data.dump() << std::endl;
+    } else if(type=="error"){
+        std::cerr << "[client] Server error: " << data.dump() << std::endl;
     } else if(type=="register"){
         // optional ack
+    } else {
+        std::cout << "[client] Unknown message type: " << type << std::endl;
     }
 }
 
@@ -141,39 +173,98 @@ void ServerBinaryClient::handle_chunk(const json& c){
 }
 
 void ServerBinaryClient::process_chunk_concurrent(const json& c){
-    auto res = bin_->execute(c);
+    // Extract chunk information from server format
+    std::string taskId = c.value("taskId", "");
+    std::string chunkId = c.value("chunkId", "");
+    int replica = c.value("replica", 0);
+    auto payload = c.value("payload", json::object());
+    auto meta = c.value("meta", json::object());
+    
+    std::cout << "[client] Processing chunk " << chunkId << " (replica " << replica << ") for task " << taskId << std::endl;
+    
+    // Convert server payload format to binary executor format
+    json chunk_task = {
+        {"id", chunkId},
+        {"parentId", taskId},
+        {"replica", replica},
+        {"meta", meta}
+    };
+    
+    // Handle payload buffers if present
+    if (payload.contains("buffers") && payload["buffers"].is_array()) {
+        // Convert buffers to stdin format for binary executor
+        std::string stdin_data;
+        for (const auto& buffer : payload["buffers"]) {
+            if (buffer.is_string()) {
+                // Assume base64 encoded
+                std::vector<uint8_t> decoded = base64_decode(buffer.get<std::string>());
+                stdin_data.append(reinterpret_cast<const char*>(decoded.data()), decoded.size());
+            }
+        }
+        if (!stdin_data.empty()) {
+            chunk_task["stdin"] = stdin_data;
+        }
+    }
+    
+    auto res = bin_->execute(chunk_task);
     nlohmann::json arr = nlohmann::json::array();
-    for(auto& o: res.outputs) arr.push_back(base64_encode(o));
+    std::string combined_checksum;
+
+    for(auto& o: res.outputs) {
+        arr.push_back(base64_encode(o));
+        // Calculate checksum for each output and combine them
+        std::string output_checksum = calculate_checksum(o);
+        if (combined_checksum.empty()) {
+            combined_checksum = output_checksum;
+        } else {
+            // Combine checksums by hashing them together
+            std::vector<uint8_t> combined_data;
+            combined_data.insert(combined_data.end(), combined_checksum.begin(), combined_checksum.end());
+            combined_data.insert(combined_data.end(), output_checksum.begin(), output_checksum.end());
+            combined_checksum = calculate_checksum(combined_data);
+        }
+    }
 
     nlohmann::json reply = {
         {"type","workload:chunk_done_enhanced"},
         {"data",{
-            {"parentId", c.value("parentId","")},
-            {"chunkId", c.value("chunkId","")},
-            {"results", arr},
+            {"taskId", taskId},
+            {"chunkId", chunkId},
+            {"replica", replica},
+            {"status", res.ok ? "ok" : "error"},
+            {"result", arr},
+            {"checksum", combined_checksum},
             {"processingTime", res.ms}
         }}
     };
 
     ws_->send_json(reply);
+    std::cout << "[client] Sent chunk result for " << chunkId << " (status: " << (res.ok ? "ok" : "error") << ")" << std::endl;
 }
 
 void ServerBinaryClient::process_workload_concurrent(const json& w){
-    auto res = bin_->execute(w);
-
-    // Clean up artifacts after workload completion
     std::string workload_id = w.value("id", "");
-    if (!workload_id.empty()) {
-        bin_->cleanup_task_artifacts(workload_id);
+    std::cout << "[client] Processing workload " << workload_id << std::endl;
+    
+    // Handle artifacts if present (this is the binary and input files)
+    if (w.contains("artifacts") && w["artifacts"].is_array()) {
+        std::cout << "[client] Processing " << w["artifacts"].size() << " artifacts for workload " << workload_id << std::endl;
+        bin_->handle_workload_artifacts(w);
     }
-
+    
+    // For native-block-matmul-flex strategy, we don't execute the workload directly
+    // Instead, we wait for individual chunks to be assigned
+    std::cout << "[client] Workload " << workload_id << " artifacts processed, waiting for chunks..." << std::endl;
+    
+    // Send acknowledgment that we're ready to process chunks
     nlohmann::json reply = {
-        {"type","workload:done"},
+        {"type","workload:ready"},
         {"data",{
             {"id", workload_id},
-            {"result", res.ok && !res.outputs.empty() ? base64_encode(res.outputs[0]) : ""},
-            {"processingTime", res.ms}
+            {"status", "ready"}
         }}
     };
+    
     ws_->send_json(reply);
+    std::cout << "[client] Sent workload ready acknowledgment for " << workload_id << std::endl;
 }

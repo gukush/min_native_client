@@ -213,10 +213,11 @@ void WebSocketClient::send(const std::string& message) {
 
 void WebSocketClient::joinComputation(const json& capabilities) {
     json joinData = {
-        {"gpuInfo", capabilities.value("device", json::object())},
-        {"hasWebGPU", false},
-        {"supportedFrameworks", capabilities.value("supportedFrameworks", json::array({"vulkan"}))},
-        {"clientType", "native"}
+        {"frameworks", capabilities.value("supportedFrameworks", json::array({"vulkan", "opencl", "cuda"}))},
+        {"strategies", json::array({"native-block-matmul-flex"})},
+        {"clientType", "native"},
+        {"device", capabilities.value("device", json::object())},
+        {"hasWebGPU", false}
     };
 
     sendEvent("client:join", joinData);
@@ -327,6 +328,8 @@ void WebSocketClient::runEventLoop() {
                     if (onRegister) {
                         onRegister(eventData);
                     }
+                } else if (eventType == "client:join:ack") {
+                    std::cout << " Client join acknowledged: " << eventData.dump() << std::endl;
                 } else if (eventType == "task:assign") {
                     if (onTaskAssigned) {
                         onTaskAssigned(eventData);
