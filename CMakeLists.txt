@@ -49,13 +49,49 @@ target_link_libraries(native_client PRIVATE
 )
 
 if(ENABLE_CUDA)
-    find_package(CUDAToolkit QUIET)
-    if(CUDAToolkit_FOUND)
-        target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
-        target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
+
+  set(_CUDA_HINTS
+    "$ENV{CUDAToolkit_ROOT}" "$ENV{CUDA_HOME}" "$ENV{CUDA_PATH}"
+    "${CUDAToolkit_ROOT}" "/usr/local/cuda" "/usr/local/cuda-13.0"
+  )
+
+  # Try the modern module first (CMake >= 3.17)
+  find_package(CUDAToolkit QUIET COMPONENTS nvrtc cuda_driver)
+
+  if(TARGET CUDA::nvrtc AND TARGET CUDA::cuda_driver)
+    target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
+    # Includes are propagated by those targets, but add a define for your code:
+    target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
+    message(STATUS "CUDA via imported targets (CUDA::nvrtc, CUDA::cuda_driver)")
+  else()
+    set(_CUDA_LIB_HINTS "")
+    foreach(r IN LISTS _CUDA_HINTS)
+      if(EXISTS "${r}")
+        list(APPEND _CUDA_LIB_HINTS
+          "${r}/targets/x86_64-linux/lib"            # shared libs
+          "${r}/targets/x86_64-linux/lib/stubs"      # stub driver
+          "${r}/lib64" "${r}/lib")
+        if(EXISTS "${r}/include")
+          set(_CUDA_INC "${r}/include")
+        endif()
+      endif()
+    endforeach()
+
+    find_library(CUDA_NVRTC_LIBRARY NAMES nvrtc libnvrtc.so HINTS ${_CUDA_LIB_HINTS})
+    find_library(CUDA_DRIVER_LIBRARY NAMES cuda libcuda.so HINTS ${_CUDA_LIB_HINTS})
+    if(CUDA_NVRTC_LIBRARY AND CUDA_DRIVER_LIBRARY)
+      target_link_libraries(native_client PRIVATE ${CUDA_DRIVER_LIBRARY} ${CUDA_NVRTC_LIBRARY})
+      if(DEFINED _CUDA_INC)
+        target_include_directories(native_client PRIVATE "${_CUDA_INC}")
+      endif()
+      target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
+      get_filename_component(_NVRTC_DIR "${CUDA_NVRTC_LIBRARY}" DIRECTORY)
+      set_target_properties(native_client PROPERTIES BUILD_RPATH "${_NVRTC_DIR}")
+      message(STATUS "CUDA via libraries: ${CUDA_DRIVER_LIBRARY}; ${CUDA_NVRTC_LIBRARY}")
     else()
-        message(WARNING "CUDAToolkit not found, CUDA mode disabled")
+      message(WARNING "Could not find both NVRTC and CUDA driver libraries; CUDA disabled")
     endif()
+  endif()
 endif()
 
 # Keep build small: no install rules, no extra targets
