@@ -36,8 +36,9 @@ bool CudaExecutor::initialize(const json& cfg){
     if(!ensureDriver()) return false;
     int cnt=0; if(!check(cuDeviceGetCount(&cnt),"cuDeviceGetCount")) return false;
     if(cnt<=0){ std::cerr<<"no cuda devices"<<std::endl; return false; }
-    CUdevice dev; if(!check(cuDeviceGet(&dev, devId),"cuDeviceGet")) return false;
-    if(!check(cuDevicePrimaryCtxRetain(&ctx, dev), "cuDevicePrimaryCtxRetain")) return false;
+
+    if(!check(cuDeviceGet(&device_, devId),"cuDeviceGet")) return false;       // <- use device_
+    if(!check(cuDevicePrimaryCtxRetain(&ctx, device_), "cuDevicePrimaryCtxRetain")) return false;
     if(!check(cuCtxSetCurrent(ctx), "cuCtxSetCurrent")) return false;
     std::cout << "[CUDA] Executor initialized with kernel cache (size: " << kernel_cache_.size() << ")" << std::endl;
     return true;
@@ -272,11 +273,16 @@ ExecResult CudaExecutor::run_task(const json& task){
 }
 
 CudaExecutor::~CudaExecutor(){
-    if(ctx) {
-        cuDevicePrimaryCtxRelease(dev);
+    if(ctx){
+        CUcontext cur = nullptr;
+        if (cuCtxGetCurrent(&cur) == CUDA_SUCCESS && cur == ctx) {
+            CUcontext dummy = nullptr;
+            cuCtxPopCurrent(&dummy);
+        }
+        cuDevicePrimaryCtxRelease(device_);
+        ctx = nullptr;
     }
 }
-
 #else
 
 bool CudaExecutor::initialize(const json& cfg){ (void)cfg; return false; }

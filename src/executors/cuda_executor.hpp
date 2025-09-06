@@ -23,13 +23,13 @@ private:
         std::string ptx;
         std::string entry;
     };
-    
+
     // Static kernel cache shared across all executor instances
     static KernelCache<CudaKernel> kernel_cache_;
-    
+
     bool ensureDriver();
     bool compileNVRTC(const std::string& src, const std::string& entry, std::string& ptx);
-    std::shared_ptr<KernelCache<CudaKernel>::CachedKernel> 
+    std::shared_ptr<KernelCache<CudaKernel>::CachedKernel>
         get_or_compile_kernel(const std::string& src, const std::string& entry);
     bool launch(const std::string& ptx, const std::string& entry,
                 const std::vector<uint64_t>& uniforms,
@@ -39,6 +39,7 @@ private:
                 std::vector<std::vector<uint8_t>>& outputs);
     bool check(CUresult res, const char* what);
     bool checkNVRTC(nvrtcResult res, const char* what);
+    CUdevice device_ = 0;
     CUcontext ctx=nullptr;
 #endif
     int devId{0};
