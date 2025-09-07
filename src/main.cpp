@@ -52,6 +52,7 @@ static void usage(const char* exe){
     std::cout << "  --ssl                         Enable SSL for local mode (default: true)\n";
     std::cout << "  --no-ssl                      Disable SSL for local mode\n";
     std::cout << "  --port <port>                 Port for local mode (default: 8787)\n";
+    std::cout << "  --listener                    Enable listener mode for metrics collection\n";
     std::cout << "  --verbose                     Enable verbose logging\n";
     std::cout << "  --help                        Show this help\n";
 }
@@ -64,6 +65,7 @@ int main(int argc, char** argv){
     unsigned short port=8787;
     bool verbose=false;
     int concurrency=1;
+    bool enable_listener=false;
 
     Logger::info("Native WebSocket Client starting up...");
     Logger::info("Build timestamp: " + std::string(__DATE__) + " " + std::string(__TIME__));
@@ -114,6 +116,10 @@ int main(int argc, char** argv){
             verbose=true;
             Logger::debug("Verbose logging enabled");
         }
+        else if(a=="--listener"){
+            enable_listener=true;
+            Logger::debug("Listener mode enabled");
+        }
         else if(a=="--help"){
             usage(argv[0]);
             return 0;
@@ -126,6 +132,7 @@ int main(int argc, char** argv){
     Logger::info("Configuration:");
     Logger::info("  Mode: " + mode);
     Logger::info("  Concurrency: " + std::to_string(concurrency) + " threads");
+    Logger::info("  Listener: " + std::string(enable_listener ? "enabled" : "disabled"));
 
     if(mode == "server") {
         Logger::info("  Server URL: " + url);
@@ -150,7 +157,7 @@ int main(int argc, char** argv){
         Logger::info("This mode connects TO a remote server, not FROM browsers");
 
         try {
-            ServerBinaryClient client(insecure, concurrency);
+            ServerBinaryClient client(insecure, concurrency, enable_listener);
             Logger::info("ServerBinaryClient created successfully");
             Logger::info("Thread pool initialized with " + std::to_string(concurrency) + " workers");
 

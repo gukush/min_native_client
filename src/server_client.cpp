@@ -24,9 +24,12 @@ std::string calculate_checksum(const std::vector<uint8_t>& data) {
     return ss.str();
 }
 
-ServerBinaryClient::ServerBinaryClient(bool insecure, int concurrency)
-    : max_concurrency_(concurrency) {
+ServerBinaryClient::ServerBinaryClient(bool insecure, int concurrency, bool enable_listener)
+    : max_concurrency_(concurrency), enable_listener_(enable_listener) {
     std::cout << "[client] Initializing with concurrency: " << concurrency << std::endl;
+    if (enable_listener_) {
+        std::cout << "[client] Listener mode enabled" << std::endl;
+    }
     thread_pool_ = std::make_unique<ThreadPool>(concurrency);
 
     ws_ = std::make_unique<WebSocketClient>();
@@ -34,6 +37,9 @@ ServerBinaryClient::ServerBinaryClient(bool insecure, int concurrency)
     ws_->onConnected = [&]{
         connected_=true;
         std::cout << "[client] Connected with " << concurrency << " worker threads" << std::endl;
+        if (enable_listener_) {
+            connect_to_listener();
+        }
     };
     ws_->onDisconnected = [&]{ connected_=false; };
     ws_->onJson = [&](const nlohmann::json& j){ handle_message(j); };
@@ -165,6 +171,11 @@ void ServerBinaryClient::handle_chunk(const json& c){
         std::cout << "[client] Queue full, waiting..." << std::endl;
     }
 
+    // Notify listener of chunk arrival
+    std::string chunkId = c.value("chunkId", "");
+    std::string taskId = c.value("taskId", "");
+    notify_listener_chunk_arrival(chunkId, taskId);
+
     active_chunks_++;
     thread_pool_->enqueue([this, c]() {
         process_chunk_concurrent(c);
@@ -189,7 +200,7 @@ void ServerBinaryClient::process_chunk_concurrent(const json& c){
         {"replica", replica},
         {"meta", meta}
     };
-    
+
     // Set the program name for binary execution
     if (meta.contains("program")) {
         chunk_task["program"] = meta["program"];
@@ -268,6 +279,10 @@ void ServerBinaryClient::process_chunk_concurrent(const json& c){
 
     ws_->send_json(reply);
     std::cout << "[client] Sent chunk result for " << chunkId << " (status: " << (res.ok ? "ok" : "error") << ")" << std::endl;
+
+    // Notify listener of chunk completion
+    std::string status = res.ok ? "completed" : "error";
+    notify_listener_chunk_complete(chunkId, status);
 }
 
 void ServerBinaryClient::process_workload_concurrent(const json& w){
@@ -295,4 +310,76 @@ void ServerBinaryClient::process_workload_concurrent(const json& w){
 
     ws_->send_json(reply);
     std::cout << "[client] Sent workload ready acknowledgment for " << workload_id << std::endl;
+}
+
+// Listener functionality implementation
+void ServerBinaryClient::connect_to_listener() {
+    if (!enable_listener_) return;
+
+    try {
+        listener_ws_ = std::make_unique<WebSocketClient>();
+
+        listener_ws_->onConnected = [&]{
+            std::cout << "[listener] Connected to listener at ws://127.0.0.1:8765" << std::endl;
+        };
+
+        listener_ws_->onDisconnected = [&]{
+            std::cout << "[listener] Disconnected from listener" << std::endl;
+            listener_ws_.reset();
+        };
+
+        listener_ws_->onMessage = [&](const std::string& message){
+            try {
+                auto response = json::parse(message);
+                std::cout << "[listener] Response: " << response.dump() << std::endl;
+            } catch (const std::exception& e) {
+                std::cout << "[listener] Failed to parse response: " << e.what() << std::endl;
+            }
+        };
+
+        if (!listener_ws_->connect("127.0.0.1", "8765", "/", false)) {
+            std::cout << "[listener] Failed to connect to listener" << std::endl;
+            listener_ws_.reset();
+        }
+    } catch (const std::exception& e) {
+        std::cout << "[listener] Exception connecting to listener: " << e.what() << std::endl;
+        listener_ws_.reset();
+    }
+}
+
+void ServerBinaryClient::notify_listener_chunk_arrival(const std::string& chunk_id, const std::string& task_id) {
+    if (!enable_listener_ || !listener_ws_) return;
+
+    try {
+        json message = {
+            {"type", "chunk_status"},
+            {"chunk_id", chunk_id},
+            {"task_id", task_id},
+            {"status", 0}  // 0 = chunk arrival/start
+        };
+
+        listener_ws_->send_json(message);
+        std::cout << "[listener] Notified chunk arrival: " << chunk_id << std::endl;
+    } catch (const std::exception& e) {
+        std::cout << "[listener] Failed to notify chunk arrival: " << e.what() << std::endl;
+    }
+}
+
+void ServerBinaryClient::notify_listener_chunk_complete(const std::string& chunk_id, const std::string& status) {
+    if (!enable_listener_ || !listener_ws_) return;
+
+    try {
+        int status_code = (status == "completed") ? 1 : -1;  // 1 = success, -1 = error
+
+        json message = {
+            {"type", "chunk_status"},
+            {"chunk_id", chunk_id},
+            {"status", status_code}
+        };
+
+        listener_ws_->send_json(message);
+        std::cout << "[listener] Notified chunk completion: " << chunk_id << " status: " << status << std::endl;
+    } catch (const std::exception& e) {
+        std::cout << "[listener] Failed to notify chunk completion: " << e.what() << std::endl;
+    }
 }
