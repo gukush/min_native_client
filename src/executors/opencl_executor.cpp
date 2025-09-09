@@ -108,10 +108,10 @@ bool OpenCLExecutor::build_kernel(const std::string& source, const std::string& 
     return true;
 }
 
-std::shared_ptr<KernelCache<OpenCLExecutor::CLKernel>::CachedKernel> 
+std::shared_ptr<KernelCache<OpenCLExecutor::CLKernel>::CachedKernel>
 OpenCLExecutor::get_or_build_kernel(const std::string& source, const std::string& entry) {
     std::string key = KernelCache<CLKernel>::computeHash(source + entry);
-    
+
     auto cached = kernel_cache_.get(key);
     if(cached) {
         std::cout << "[OpenCL] Using cached kernel for entry: " << entry << std::endl;
@@ -120,22 +120,22 @@ OpenCLExecutor::get_or_build_kernel(const std::string& source, const std::string
         clRetainKernel(cached->kernel.kernel);
         return cached;
     }
-    
+
     std::cout << "[OpenCL] Compiling new kernel for entry: " << entry << std::endl;
     cl_program prog;
     cl_kernel kernel;
     std::string buildLog;
-    
+
     if(!build_kernel(source, entry, prog, kernel, buildLog)) {
         return nullptr;
     }
-    
+
     auto cachedKernel = std::make_shared<KernelCache<CLKernel>::CachedKernel>();
     cachedKernel->kernel.program = prog;
     cachedKernel->kernel.kernel = kernel;
     cachedKernel->kernel.buildLog = buildLog;
     cachedKernel->lastUsed = std::chrono::steady_clock::now();
-    
+
     kernel_cache_.put(key, cachedKernel);
     std::cout << "[OpenCL] Kernel cached (cache size: " << kernel_cache_.size() << ")" << std::endl;
     return cachedKernel;
@@ -203,7 +203,8 @@ ExecResult OpenCLExecutor::run_task(const json& task){
 
     cl_program prog = cachedKernel->kernel.program;
     cl_kernel kernel = cachedKernel->kernel.kernel;
-
+    clRetainProgram(prog);
+    clRetainKernel(kernel);
     // Thread-safe queue usage
     std::lock_guard<std::mutex> qlock(queue_mutex_);
 
@@ -220,8 +221,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
         err = clSetKernelArg(kernel, argIndex++, sizeof(int), &intVal);
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clSetKernelArg uniform failed with error: " << err << std::endl;
-            clReleaseProgram(prog);
-            clReleaseKernel(kernel);
             r.error = "clSetKernelArg uniform failed";
             return finish(r);
         }
@@ -236,8 +235,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clCreateBuffer input failed with error: " << err << std::endl;
             for(size_t j=0; j<i; ++j) if(inBufs[j]) clReleaseMemObject(inBufs[j]);
-            clReleaseProgram(prog);
-            clReleaseKernel(kernel);
             r.error = "clCreateBuffer input failed";
             return finish(r);
         }
@@ -246,8 +243,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
         if(err!=CL_SUCCESS){
             std::cerr << "[OpenCL] clSetKernelArg input failed with error: " << err << std::endl;
             for(auto m: inBufs) if(m) clReleaseMemObject(m);
-            clReleaseProgram(prog);
-            clReleaseKernel(kernel);
             r.error = "clSetKernelArg input failed";
             return finish(r);
         }
@@ -263,8 +258,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
             std::cerr << "[OpenCL] clCreateBuffer output failed with error: " << err << std::endl;
             for(auto m: inBufs) if(m) clReleaseMemObject(m);
             for(size_t j=0; j<i; ++j) if(outBufs[j]) clReleaseMemObject(outBufs[j]);
-            clReleaseProgram(prog);
-            clReleaseKernel(kernel);
             r.error = "clCreateBuffer output failed";
             return finish(r);
         }
@@ -274,8 +267,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
             std::cerr << "[OpenCL] clSetKernelArg output failed with error: " << err << std::endl;
             for(auto m: inBufs) if(m) clReleaseMemObject(m);
             for(auto m: outBufs) if(m) clReleaseMemObject(m);
-            clReleaseProgram(prog);
-            clReleaseKernel(kernel);
             r.error = "clSetKernelArg output failed";
             return finish(r);
         }
@@ -299,8 +290,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
         std::cerr << "[OpenCL] clEnqueueNDRangeKernel failed with error: " << err << std::endl;
         for(auto m: inBufs) if(m) clReleaseMemObject(m);
         for(auto m: outBufs) if(m) clReleaseMemObject(m);
-        clReleaseProgram(prog);
-        clReleaseKernel(kernel);
         r.error = "clEnqueueNDRangeKernel failed";
         return finish(r);
     }
@@ -320,8 +309,6 @@ ExecResult OpenCLExecutor::run_task(const json& task){
             std::cerr << "[OpenCL] clEnqueueReadBuffer failed with error: " << err << std::endl;
             for(auto m: inBufs) if(m) clReleaseMemObject(m);
             for(auto m: outBufs) if(m) clReleaseMemObject(m);
-            clReleaseProgram(prog);
-            clReleaseKernel(kernel);
             r.error = "clEnqueueReadBuffer failed";
             return finish(r);
         }
@@ -330,8 +317,7 @@ ExecResult OpenCLExecutor::run_task(const json& task){
     // Cleanup buffers only (kernel/program stay cached)
     for(auto m: inBufs) if(m) clReleaseMemObject(m);
     for(auto m: outBufs) if(m) clReleaseMemObject(m);
-    clReleaseProgram(prog);
-    clReleaseKernel(kernel);
+    // Note: prog and kernel are retained by the cache, don't release them here
 
     std::cerr << "[OpenCL] Task execution completed successfully!" << std::endl;
     r.ok = true;

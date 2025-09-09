@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(ENABLE_CUDA "Build CUDA NVRTC executor" ON)
-option(ENABLE_OPENCL "Build OpenCL executor (stub)" OFF)
+option(ENABLE_OPENCL "Build OpenCL executor (stub)" ON)
 option(ENABLE_VULKAN "Build Vulkan executor (stub)" OFF)
 
 find_package(Threads REQUIRED)
