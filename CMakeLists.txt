@@ -57,47 +57,64 @@ target_link_libraries(native_client PRIVATE
 
 # ---------------- CUDA ----------------
 if(ENABLE_CUDA)
+    # Try to find CUDA toolkit with modern CMake approach first
+    find_package(CUDAToolkit QUIET)
 
-  set(_CUDA_HINTS
-    "$ENV{CUDAToolkit_ROOT}" "$ENV{CUDA_HOME}" "$ENV{CUDA_PATH}"
-    "${CUDAToolkit_ROOT}" "/usr/local/cuda" "/usr/local/cuda-13.0"
-  )
+    if(CUDAToolkit_FOUND)
+        # Use modern imported targets if available
+        if(TARGET CUDA::nvrtc AND TARGET CUDA::cuda_driver)
+            target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
+            target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
+            message(STATUS "CUDA: Using imported targets (CUDA::nvrtc, CUDA::cuda_driver)")
+        else()
+            # Fallback: try to find libraries manually
+            set(_CUDA_SEARCH_PATHS
+                "$ENV{CUDAToolkit_ROOT}" "$ENV{CUDA_HOME}" "$ENV{CUDA_PATH}"
+                "/usr/local/cuda" "/usr/local/cuda-12.0" "/usr/local/cuda-11.8"
+                "/opt/cuda" "/opt/nvidia/cuda"
+            )
 
-  find_package(CUDAToolkit QUIET COMPONENTS nvrtc cuda_driver)
+            find_library(CUDA_NVRTC_LIBRARY
+                NAMES nvrtc libnvrtc.so
+                HINTS ${_CUDA_SEARCH_PATHS}
+                PATH_SUFFIXES lib64 lib targets/x86_64-linux/lib
+            )
 
-  if(TARGET CUDA::nvrtc AND TARGET CUDA::cuda_driver)
-    target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
-    target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
-    message(STATUS "CUDA via imported targets (CUDA::nvrtc, CUDA::cuda_driver)")
-  else()
-    set(_CUDA_LIB_HINTS "")
-    foreach(r IN LISTS _CUDA_HINTS)
-      if(EXISTS "${r}")
-        list(APPEND _CUDA_LIB_HINTS
-          "${r}/targets/x86_64-linux/lib"
-          "${r}/targets/x86_64-linux/lib/stubs"
-          "${r}/lib64" "${r}/lib")
-        if(EXISTS "${r}/include")
-          set(_CUDA_INC "${r}/include")
+            find_library(CUDA_DRIVER_LIBRARY
+                NAMES cuda libcuda.so
+                HINTS ${_CUDA_SEARCH_PATHS}
+                PATH_SUFFIXES lib64 lib targets/x86_64-linux/lib targets/x86_64-linux/lib/stubs
+            )
+
+            find_path(CUDA_INCLUDE_DIR
+                NAMES cuda_runtime.h nvrtc.h
+                HINTS ${_CUDA_SEARCH_PATHS}
+                PATH_SUFFIXES include
+            )
+
+            if(CUDA_NVRTC_LIBRARY AND CUDA_DRIVER_LIBRARY)
+                target_link_libraries(native_client PRIVATE ${CUDA_DRIVER_LIBRARY} ${CUDA_NVRTC_LIBRARY})
+                target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
+
+                if(CUDA_INCLUDE_DIR)
+                    target_include_directories(native_client PRIVATE ${CUDA_INCLUDE_DIR})
+                endif()
+
+                # Set RPATH for runtime library discovery
+                get_filename_component(CUDA_LIB_DIR ${CUDA_NVRTC_LIBRARY} DIRECTORY)
+                set_target_properties(native_client PROPERTIES
+                    BUILD_RPATH "${CUDA_LIB_DIR}"
+                    INSTALL_RPATH "${CUDA_LIB_DIR}"
+                )
+
+                message(STATUS "CUDA: Found libraries - Driver: ${CUDA_DRIVER_LIBRARY}, NVRTC: ${CUDA_NVRTC_LIBRARY}")
+            else()
+                message(WARNING "CUDA: Could not find required libraries (libcuda.so and libnvrtc.so)")
+            endif()
         endif()
-      endif()
-    endforeach()
-
-    find_library(CUDA_NVRTC_LIBRARY NAMES nvrtc libnvrtc.so HINTS ${_CUDA_LIB_HINTS})
-    find_library(CUDA_DRIVER_LIBRARY NAMES cuda libcuda.so HINTS ${_CUDA_LIB_HINTS})
-    if(CUDA_NVRTC_LIBRARY AND CUDA_DRIVER_LIBRARY)
-      target_link_libraries(native_client PRIVATE ${CUDA_DRIVER_LIBRARY} ${CUDA_NVRTC_LIBRARY})
-      if(DEFINED _CUDA_INC)
-        target_include_directories(native_client PRIVATE "${_CUDA_INC}")
-      endif()
-      target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
-      get_filename_component(_NVRTC_DIR "${CUDA_NVRTC_LIBRARY}" DIRECTORY)
-      set_target_properties(native_client PROPERTIES BUILD_RPATH "${_NVRTC_DIR}")
-      message(STATUS "CUDA via libraries: ${CUDA_DRIVER_LIBRARY}; ${CUDA_NVRTC_LIBRARY}")
     else()
-      message(WARNING "Could not find both NVRTC and CUDA driver libraries; CUDA disabled")
+        message(WARNING "CUDA: CUDAToolkit not found, CUDA support disabled")
     endif()
-  endif()
 endif()
 
 # ---------------- OpenCL ----------------
