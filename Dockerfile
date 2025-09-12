@@ -17,12 +17,21 @@ ENV VCPKG_ROOT=/opt/vcpkg
 RUN git clone --depth=1 https://github.com/microsoft/vcpkg.git ${VCPKG_ROOT} \
  && ${VCPKG_ROOT}/bootstrap-vcpkg.sh -disableMetrics
 
+RUN mkdir -p /opt/vcpkg/overlay-triplets && \
+    cat > /opt/vcpkg/overlay-triplets/x64-linux-dynamic.cmake <<'EOF'
+set(VCPKG_TARGET_ARCHITECTURE x64)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE dynamic)
+set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+EOF
+
+
 # FIXED: Define VCPKG_TRIPLET as ARG and ENV
-ARG VCPKG_TRIPLET=x64-linux
+ARG VCPKG_TRIPLET=x64-linux-dynamic
 ENV VCPKG_TRIPLET=${VCPKG_TRIPLET}
 
 # Install only what we need – rely on system libvulkan loader
-RUN ${VCPKG_ROOT}/vcpkg install --triplet=${VCPKG_TRIPLET} \
+RUN ${VCPKG_ROOT}/vcpkg install --overlay-triplets=/opt/vcpkg/overlay-triplets --triplet=${VCPKG_TRIPLET} \
     boost-system \
     boost-url \
     boost-beast \
@@ -30,15 +39,19 @@ RUN ${VCPKG_ROOT}/vcpkg install --triplet=${VCPKG_TRIPLET} \
     openssl \
     nlohmann-json \
     shaderc \
-    vulkan-headers
+    vulkan-headers \
+    sol2 \
+    luajit
 
 # Build client
 WORKDIR /src
 COPY . /src
 
-RUN find /opt/vcpkg/installed/x64-linux/share -maxdepth 3 -type f -iname "*shaderc*" -print
-
-RUN ls -la ${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/lib | grep -i shaderc || true
+#RUN find /opt/vcpkg/installed/x64-linux/share -maxdepth 3 -type f -iname "*shaderc*" -print
+RUN ls -la ${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/lib || true
+RUN find /opt/vcpkg/installed/x64-linux/share -maxdepth 3 -type f -iname "*luajit*" -print
+#RUN ls -la ${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/lib | grep -i luajit || true
+RUN ls -la /opt/vcpkg/installed/${VCPKG_TRIPLET}/debug/lib || true
 
 ARG BUILD_TYPE=Debug
 RUN cmake -S . -B build \
@@ -53,6 +66,9 @@ RUN cmake -S . -B build \
     -DENABLE_OPENCL=ON \
     -DENABLE_VULKAN=ON \
     -DENABLE_CUDA=OFF \
+    -DENABLE_LUA=ON \
+    -DCMAKE_EXE_LINKER_FLAGS="-L${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/debug/lib -Wl,-rpath,${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/debug/lib" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-L${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/debug/lib -Wl,-rpath,${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/debug/lib" \
  && cmake --build build --parallel
 
 # Runtime stage

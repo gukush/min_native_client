@@ -1,4 +1,3 @@
-
 #pragma once
 #include <nlohmann/json.hpp>
 #include <vector>
@@ -9,6 +8,7 @@ struct ExecResult {
     std::vector<std::vector<uint8_t>> outputs;
     double ms{0.0};
     std::string error;
+    nlohmann::json timings = nlohmann::json::object();
 };
 
 class IExecutor {

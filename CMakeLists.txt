@@ -1,4 +1,3 @@
-
 cmake_minimum_required(VERSION 3.16)
 project(native_client_min LANGUAGES CXX)
 
@@ -8,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(ENABLE_CUDA "Build CUDA NVRTC executor" ON)
 option(ENABLE_OPENCL "Build OpenCL executor (stub)" ON)
 option(ENABLE_VULKAN "Build Vulkan executor (stub)" OFF)
+option(ENABLE_LUA "Enable Lua host scripting via sol2 + LuaJIT" OFF)
 
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -20,12 +20,15 @@ add_executable(native_client
     src/main.cpp
     src/websocket_client.hpp
     src/websocket_client.cpp
-    src/server_client.hpp
-    src/server_client.cpp
-    src/local_ws_server.hpp
-    src/local_ws_server.cpp
+
+    # Renamed client
+    src/orchestrator_client.hpp
+    src/orchestrator_client.cpp
+
     src/base64.hpp
     src/base64.cpp
+
+    # executors
     src/executors/iexecutor.hpp
     src/executors/binary_executor.hpp
     src/executors/binary_executor.cpp
@@ -35,6 +38,10 @@ add_executable(native_client
     src/executors/opencl_executor.cpp
     src/executors/vulkan_executor.hpp
     src/executors/vulkan_executor.cpp
+
+    # Lua host (conditional)
+    src/lua_host.hpp
+    src/lua_host.cpp
 )
 
 target_include_directories(native_client PRIVATE src)
@@ -48,6 +55,7 @@ target_link_libraries(native_client PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+# ---------------- CUDA ----------------
 if(ENABLE_CUDA)
 
   set(_CUDA_HINTS
@@ -55,12 +63,10 @@ if(ENABLE_CUDA)
     "${CUDAToolkit_ROOT}" "/usr/local/cuda" "/usr/local/cuda-13.0"
   )
 
-  # Try the modern module first (CMake >= 3.17)
   find_package(CUDAToolkit QUIET COMPONENTS nvrtc cuda_driver)
 
   if(TARGET CUDA::nvrtc AND TARGET CUDA::cuda_driver)
     target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
-    # Includes are propagated by those targets, but add a define for your code:
     target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
     message(STATUS "CUDA via imported targets (CUDA::nvrtc, CUDA::cuda_driver)")
   else()
@@ -68,8 +74,8 @@ if(ENABLE_CUDA)
     foreach(r IN LISTS _CUDA_HINTS)
       if(EXISTS "${r}")
         list(APPEND _CUDA_LIB_HINTS
-          "${r}/targets/x86_64-linux/lib"            # shared libs
-          "${r}/targets/x86_64-linux/lib/stubs"      # stub driver
+          "${r}/targets/x86_64-linux/lib"
+          "${r}/targets/x86_64-linux/lib/stubs"
           "${r}/lib64" "${r}/lib")
         if(EXISTS "${r}/include")
           set(_CUDA_INC "${r}/include")
@@ -94,9 +100,7 @@ if(ENABLE_CUDA)
   endif()
 endif()
 
-# Keep build small: no install rules, no extra targets
-
-
+# ---------------- OpenCL ----------------
 if(ENABLE_OPENCL)
     find_package(OpenCL QUIET)
     if(OpenCL_FOUND)
@@ -108,8 +112,8 @@ if(ENABLE_OPENCL)
     endif()
 endif()
 
+# ---------------- Vulkan (+ shaderc) ----------------
 if(ENABLE_VULKAN)
-    # find Vulkan normally
     find_package(Vulkan QUIET)
     if(Vulkan_FOUND)
         target_link_libraries(native_client PRIVATE Vulkan::Vulkan)
@@ -118,11 +122,9 @@ if(ENABLE_VULKAN)
         message(WARNING "Vulkan not found, Vulkan mode disabled")
     endif()
 
-    # Prefer the vcpkg-provided config for shaderc (vcpkg installs unofficial-shaderc)
     message(STATUS "Trying to find shaderc via vcpkg/config (unofficial-shaderc)...")
     find_package(unofficial-shaderc CONFIG QUIET)
 
-    # fallbacks: plain shaderc config, Vulkan component, pkg-config
     if(NOT unofficial-shaderc_FOUND)
         message(STATUS "unofficial-shaderc not found; trying shaderc (other vcpkg layouts)...")
         find_package(shaderc CONFIG QUIET)
@@ -141,7 +143,6 @@ if(ENABLE_VULKAN)
         endif()
     endif()
 
-    # Link the right target / libs
     if(unofficial-shaderc_FOUND)
         message(STATUS "Linking shaderc via vcpkg config: unofficial::shaderc::shaderc")
         target_link_libraries(native_client PRIVATE unofficial::shaderc::shaderc)
@@ -163,3 +164,119 @@ if(ENABLE_VULKAN)
         message(WARNING "shaderc not found; will expect SPIR-V binaries only")
     endif()
 endif()
+
+# ---------------- Lua host (sol2 + LuaJIT) ----------------
+# ---------------- Lua host (sol2 + LuaJIT) ----------------
+if(ENABLE_LUA)
+    # sol2 itself (header-only target)
+    find_package(sol2 CONFIG REQUIRED)  # vcpkg: sol2::sol2
+
+    # Try to find LuaJIT (preferred) or Lua (any 5.x) in several ways.
+    set(_LUA_FOUND FALSE)
+
+    # -- Config-mode (vcpkg-style) --
+    find_package(LuaJIT CONFIG QUIET)         # exports luajit::luajit on vcpkg
+    if(LuaJIT_FOUND)
+        set(_LUA_FOUND TRUE)
+        set(_LUA_TGT luajit::luajit)
+    endif()
+
+    if(NOT _LUA_FOUND)
+        # Some ports export "lua::lua" or variables via FindLua.cmake
+        find_package(lua CONFIG QUIET)        # non-standard, but cheap to try
+        if(lua_FOUND AND TARGET lua::lua)
+            set(_LUA_FOUND TRUE)
+            set(_LUA_TGT lua::lua)
+        endif()
+    endif()
+
+    if(NOT _LUA_FOUND)
+        # Built-in FindLua (may locate system Lua 5.x)
+        find_package(Lua QUIET)               # sets LUA_INCLUDE_DIR / LUA_LIBRARIES
+        if(Lua_FOUND)
+            set(_LUA_FOUND TRUE)
+        endif()
+    endif()
+
+    if(NOT _LUA_FOUND)
+        # -- pkg-config fallback --
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LUAJIT_PKG QUIET luajit)
+            if(LUAJIT_PKG_FOUND)
+                set(_LUA_FOUND TRUE)
+                set(_LUA_PKG_INCS ${LUAJIT_PKG_INCLUDE_DIRS})
+                set(_LUA_PKG_LIBS ${LUAJIT_PKG_LIBRARIES})
+            endif()
+        endif()
+    endif()
+
+    if(NOT _LUA_FOUND)
+        # -- Manual last-resort (typical vcpkg locations) --
+        # Covers headers living in subdirs like: luajit-2.1/, luajit/, lua5.4/, etc.
+        set(_VCPKG_INC_HINTS
+            "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/include"
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/include"
+            "/opt/vcpkg/installed/${VCPKG_TARGET_TRIPLET}/include")
+        set(_VCPKG_LIB_HINTS
+            "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/lib"
+            "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/debug/lib"
+            "/opt/vcpkg/installed/${VCPKG_TARGET_TRIPLET}/lib"
+            "/opt/vcpkg/installed/${VCPKG_TARGET_TRIPLET}/debug/lib")
+
+        find_path(LUA_INCLUDE_DIR
+            NAMES lua.h luajit.h
+            HINTS ${_VCPKG_INC_HINTS}
+            PATH_SUFFIXES luajit-2.1 luajit lua5.4 lua5.3 lua5.2 lua5.1 lua)
+
+        find_library(LUA_LIBRARY
+            NAMES luajit-5.1 luajit lua5.4 lua5.3 lua5.2 lua5.1 lua
+            HINTS ${_VCPKG_LIB_HINTS})
+
+        if(LUA_INCLUDE_DIR AND LUA_LIBRARY)
+            set(_LUA_FOUND TRUE)
+        endif()
+    endif()
+
+    # ---- Wire everything up ----
+    if(TARGET sol2::sol2)
+        target_link_libraries(native_client PRIVATE sol2::sol2)
+    endif()
+
+    if(_LUA_FOUND)
+        # Prefer a proper target if we have one
+        if(DEFINED _LUA_TGT AND TARGET ${_LUA_TGT})
+            target_link_libraries(native_client PRIVATE ${_LUA_TGT})
+            # Try to harvest include dirs from the target
+            get_target_property(_LUA_INC_FROM_TGT ${_LUA_TGT} INTERFACE_INCLUDE_DIRECTORIES)
+            if(_LUA_INC_FROM_TGT)
+                target_include_directories(native_client PRIVATE ${_LUA_INC_FROM_TGT})
+            endif()
+        elseif(Lua_FOUND)
+            # From FindLua.cmake
+            target_include_directories(native_client PRIVATE ${LUA_INCLUDE_DIR})
+            target_link_libraries(native_client PRIVATE ${LUA_LIBRARIES})
+        elseif(LUAJIT_PKG_FOUND)
+            # From pkg-config
+            target_include_directories(native_client PRIVATE ${_LUA_PKG_INCS})
+            target_link_libraries(native_client PRIVATE ${_LUA_PKG_LIBS})
+        elseif(LUA_INCLUDE_DIR AND LUA_LIBRARY)
+            # Manual fallback
+            target_include_directories(native_client PRIVATE ${LUA_INCLUDE_DIR})
+            target_link_libraries(native_client PRIVATE ${LUA_LIBRARY})
+        endif()
+
+        target_compile_definitions(native_client PRIVATE HAVE_LUA=1)
+        # If we specifically matched LuaJIT, add HAVE_LUAJIT too
+        if(LuaJIT_FOUND OR LUAJIT_PKG_FOUND OR (LUA_LIBRARY MATCHES "luajit"))
+            target_compile_definitions(native_client PRIVATE HAVE_LUAJIT=1)
+        endif()
+    else()
+        message(FATAL_ERROR
+            "LuaJIT/Lua not found. Install via vcpkg: `vcpkg install sol2 luajit` "
+            "or provide -DLUA_INCLUDE_DIR and -DLUA_LIBRARY.")
+    endif()
+endif()
+
+
+# Keep build small: no install rules

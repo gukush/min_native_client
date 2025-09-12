@@ -1,6 +1,6 @@
 
 #include "binary_executor.hpp"
-#include "base64.hpp"
+#include "../base64.hpp"
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -54,6 +54,14 @@ ExecResult BinaryExecutor::run_task(const json& task){
         handle_workload_artifacts(task);
     }
 
+    // Handle artifacts from workload if this is a chunk with workload info
+    if (task.contains("workload") && task["workload"].contains("artifacts")) {
+        // Use the task ID from the chunk, not the workload
+        json workload_with_id = task["workload"];
+        workload_with_id["id"] = task.value("id", "");
+        handle_workload_artifacts(workload_with_id);
+    }
+
     // Determine executable path
     std::string exe;
     std::string task_id = task.value("id", "");
@@ -62,13 +70,21 @@ ExecResult BinaryExecutor::run_task(const json& task){
     if (task.contains("meta") && task["meta"].contains("program")) {
         std::string program_name = task["meta"]["program"];
         exe = get_binary_path(program_name, task_id);
+        std::cout << "[BinaryExecutor] Using binary from meta.program: " << program_name << " -> " << exe << std::endl;
+    } else if (task.contains("workload") && task["workload"].contains("config") && task["workload"]["config"].contains("program")) {
+        // Get program name from workload config
+        std::string program_name = task["workload"]["config"]["program"];
+        exe = get_binary_path(program_name, task_id);
+        std::cout << "[BinaryExecutor] Using binary from workload.config.program: " << program_name << " -> " << exe << std::endl;
     } else if (task.contains("program")) {
         // Fall back to workload program
         std::string program_name = task["program"];
         exe = get_binary_path(program_name, task_id);
+        std::cout << "[BinaryExecutor] Using binary from task.program: " << program_name << " -> " << exe << std::endl;
     } else {
         // Legacy: direct executable path
         exe = task.value("executable", "");
+        std::cout << "[BinaryExecutor] Using direct executable path: " << exe << std::endl;
     }
 
     if(exe.empty()){
@@ -78,10 +94,45 @@ ExecResult BinaryExecutor::run_task(const json& task){
 
     // Handle chunked data for block matmul
     std::vector<uint8_t> stdin_data;
+
+    std::cout << "[BinaryExecutor] Task keys: ";
+    for (auto& [key, value] : task.items()) {
+        std::cout << key << " ";
+    }
+    std::cout << std::endl;
+
     if(task.contains("stdin") && task["stdin"].is_string()){
         // Raw binary data from stdin
         auto s = task["stdin"].get<std::string>();
         stdin_data.assign(s.begin(), s.end());
+        std::cout << "[BinaryExecutor] Got stdin data: " << stdin_data.size() << " bytes" << std::endl;
+    } else if (task.contains("buffers") && task["buffers"].is_array()) {
+        // Handle buffers array format from native-block-matmul-flex strategy
+        auto buffers = task["buffers"];
+        std::cout << "[BinaryExecutor] Processing " << buffers.size() << " buffers" << std::endl;
+
+        for (size_t i = 0; i < buffers.size(); i++) {
+            const auto& buffer = buffers[i];
+            size_t buffer_start = stdin_data.size();
+
+            if (buffer.is_array()) {
+                // Convert array of bytes to vector
+                for (const auto& byte : buffer) {
+                    if (byte.is_number()) {
+                        stdin_data.push_back(static_cast<uint8_t>(byte.get<int>()));
+                    }
+                }
+            } else if (buffer.is_string()) {
+                // Handle base64 encoded data
+                auto b = base64_decode(buffer.get<std::string>());
+                stdin_data.insert(stdin_data.end(), b.begin(), b.end());
+            }
+
+            std::cout << "[BinaryExecutor] Buffer " << i << ": " << (stdin_data.size() - buffer_start) << " bytes" << std::endl;
+        }
+        std::cout << "[BinaryExecutor] Total stdin data: " << stdin_data.size() << " bytes" << std::endl;
+    } else {
+        std::cout << "[BinaryExecutor] No stdin or buffers data found in task" << std::endl;
     }
 
     // Build command line arguments for the binary
@@ -100,6 +151,11 @@ ExecResult BinaryExecutor::run_task(const json& task){
                 arg_strings.push_back(std::to_string(uniforms[1].get<int>()));
                 arg_strings.push_back("--cols");
                 arg_strings.push_back(std::to_string(uniforms[2].get<int>()));
+
+                std::cout << "[BinaryExecutor] Matrix dimensions: "
+                         << uniforms[0].get<int>() << " x "
+                         << uniforms[1].get<int>() << " x "
+                         << uniforms[2].get<int>() << std::endl;
             }
         }
 
@@ -126,10 +182,10 @@ ExecResult BinaryExecutor::run_task(const json& task){
     std::cout << std::endl;
 
     int inpipe[2], outpipe[2];
-	if (pipe(inpipe) == -1 || pipe(outpipe) == -1) {
-    	// error
-    	return ExecResult{false, {}, 0};
-	}
+    if (pipe(inpipe) == -1 || pipe(outpipe) == -1) {
+        r.error = "failed to create pipes";
+        return r;
+    }
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -137,7 +193,10 @@ ExecResult BinaryExecutor::run_task(const json& task){
     std::cout << "[BinaryExecutor] Attempting to execute: " << exe << std::endl;
     std::cout << "[BinaryExecutor] Working directory: " << std::filesystem::current_path() << std::endl;
     std::cout << "[BinaryExecutor] File exists: " << std::filesystem::exists(exe) << std::endl;
-    std::cout << "[BinaryExecutor] Is regular file: " << std::filesystem::is_regular_file(exe) << std::endl;
+    if (std::filesystem::exists(exe)) {
+        std::cout << "[BinaryExecutor] Is regular file: " << std::filesystem::is_regular_file(exe) << std::endl;
+        std::cout << "[BinaryExecutor] File size: " << std::filesystem::file_size(exe) << " bytes" << std::endl;
+    }
 
     pid_t pid = fork();
     if(pid==0){
@@ -149,12 +208,18 @@ ExecResult BinaryExecutor::run_task(const json& task){
         _exit(127);
     } else if(pid>0){
         close(inpipe[0]); close(outpipe[1]);
+
         if(!stdin_data.empty()) {
+            std::cout << "[BinaryExecutor] Writing " << stdin_data.size() << " bytes to stdin" << std::endl;
             ssize_t written = write(inpipe[1], stdin_data.data(), stdin_data.size());
             if(written < 0) {
                 r.error = "failed to write to stdin";
+                close(inpipe[1]); close(outpipe[0]);
                 return r;
             }
+            std::cout << "[BinaryExecutor] Successfully wrote " << written << " bytes to stdin" << std::endl;
+        } else {
+            std::cout << "[BinaryExecutor] No data to write to stdin" << std::endl;
         }
         close(inpipe[1]);
 
@@ -165,11 +230,33 @@ ExecResult BinaryExecutor::run_task(const json& task){
             out.insert(out.end(), buf, buf+n);
         }
         close(outpipe[0]);
-        int status=0; waitpid(pid, &status, 0);
+
+        std::cout << "[BinaryExecutor] Read " << out.size() << " bytes from stdout" << std::endl;
+
+        int status=0;
+        waitpid(pid, &status, 0);
+
         auto t1 = std::chrono::high_resolution_clock::now();
         r.ms = std::chrono::duration<double, std::milli>(t1-t0).count();
-        r.ok = (WIFEXITED(status) && WEXITSTATUS(status)==0);
-        if(!r.ok) r.error="process failed";
+
+        if (WIFEXITED(status)) {
+            int exit_code = WEXITSTATUS(status);
+            std::cout << "[BinaryExecutor] Process exited with code: " << exit_code << std::endl;
+            r.ok = (exit_code == 0);
+            if (!r.ok) {
+                r.error = "process exited with code " + std::to_string(exit_code);
+            }
+        } else if (WIFSIGNALED(status)) {
+            int signal = WTERMSIG(status);
+            std::cout << "[BinaryExecutor] Process killed by signal: " << signal << std::endl;
+            r.ok = false;
+            r.error = "process killed by signal " + std::to_string(signal);
+        } else {
+            std::cout << "[BinaryExecutor] Process terminated abnormally" << std::endl;
+            r.ok = false;
+            r.error = "process terminated abnormally";
+        }
+
         r.outputs = { std::move(out) };
         return r;
     } else {

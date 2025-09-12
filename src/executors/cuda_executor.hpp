@@ -42,5 +42,9 @@ private:
     CUdevice device_ = 0;
     CUcontext ctx=nullptr;
 #endif
+    double last_compile_ms_{0.0};
+    double last_h2d_ms_{0.0};
+    double last_kernel_ms_{0.0};
+    double last_d2h_ms_{0.0};
     int devId{0};
 };

@@ -1,9 +1,16 @@
 #include "cuda_executor.hpp"
+#include "../base64.hpp"
 #include <iostream>
 #include <chrono>
 #include <cstring>
 
 #ifdef HAVE_CUDA
+
+// GPU timing accumulators (thread-local)
+static thread_local double g_cuda_compile_ms = 0.0;
+static thread_local double g_cuda_h2d_ms = 0.0;
+static thread_local double g_cuda_kernel_ms = 0.0;
+static thread_local double g_cuda_d2h_ms = 0.0;
 
 // Static member definition
 KernelCache<CudaExecutor::CudaKernel> CudaExecutor::kernel_cache_;
@@ -24,42 +31,54 @@ bool CudaExecutor::checkNVRTC(nvrtcResult res, const char* what){
 
 bool CudaExecutor::ensureDriver(){
     static bool inited=false;
-    static std::mutex init_mutex;
-    std::lock_guard<std::mutex> lock(init_mutex);
-    if(inited) return true;
-    if(!check(cuInit(0),"cuInit")) return false;
-    inited=true; return true;
+    static bool ok=false;
+    if(!inited){
+        ok = (cuInit(0)==CUDA_SUCCESS);
+        inited=true;
+    }
+    return ok;
 }
 
 bool CudaExecutor::initialize(const json& cfg){
     (void)cfg;
-    if(!ensureDriver()) return false;
-    int cnt=0; if(!check(cuDeviceGetCount(&cnt),"cuDeviceGetCount")) return false;
-    if(cnt<=0){ std::cerr<<"no cuda devices"<<std::endl; return false; }
-
-    if(!check(cuDeviceGet(&device_, devId),"cuDeviceGet")) return false;       // <- use device_
-    if(!check(cuDevicePrimaryCtxRetain(&ctx, device_), "cuDevicePrimaryCtxRetain")) return false;
-    if(!check(cuCtxSetCurrent(ctx), "cuCtxSetCurrent")) return false;
-    std::cout << "[CUDA] Executor initialized with kernel cache (size: " << kernel_cache_.size() << ")" << std::endl;
+    if(!ensureDriver()){
+        std::cerr << "[CUDA] cuInit failed\n";
+        return false;
+    }
+    int count=0;
+    if(cuDeviceGetCount(&count)!=CUDA_SUCCESS || count<=0){
+        std::cerr << "[CUDA] No CUDA device found\n";
+        return false;
+    }
+    if(cuDeviceGet(&device_, devId)!=CUDA_SUCCESS){
+        std::cerr << "[CUDA] cuDeviceGet failed for device " << devId << "\n";
+        return false;
+    }
+    if(cuDevicePrimaryCtxRetain(&ctx, device_)!=CUDA_SUCCESS){
+        std::cerr << "[CUDA] cuDevicePrimaryCtxRetain failed\n";
+        return false;
+    }
     return true;
 }
 
 bool CudaExecutor::compileNVRTC(const std::string& src, const std::string& entry, std::string& ptx){
     (void)entry;
-    nvrtcProgram prog=nullptr;
-    if(!checkNVRTC(nvrtcCreateProgram(&prog, src.c_str(), "k.cu", 0, nullptr, nullptr), "nvrtcCreateProgram")) return false;
+    nvrtcProgram prog{};
+    if(!checkNVRTC(nvrtcCreateProgram(&prog, src.c_str(), "kernel.cu", 0, nullptr, nullptr), "nvrtcCreateProgram")) return false;
 
-    int major=0, minor=0;
-    {
-        CUdevice dev;
-        if(!check(cuDeviceGet(&dev, devId), "cuDeviceGet")) { nvrtcDestroyProgram(&prog); return false; }
-        if(!check(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev), "cuDeviceGetAttribute(major)")) { nvrtcDestroyProgram(&prog); return false; }
-        if(!check(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev), "cuDeviceGetAttribute(minor)")) { nvrtcDestroyProgram(&prog); return false; }
+    int major=7, minor=0;
+    if(ctx){
+        CUdevice dev; cuCtxGetDevice(&dev);
+        cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev);
+        cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev);
     }
 
     std::string archOpt = std::string("--gpu-architecture=compute_") + std::to_string(major) + std::to_string(minor);
     const char* opts[] = {"--std=c++14", archOpt.c_str()};
+    auto __nvrtc_t0 = std::chrono::high_resolution_clock::now();
     auto r = nvrtcCompileProgram(prog, int(std::size(opts)), opts);
+    auto __nvrtc_t1 = std::chrono::high_resolution_clock::now();
+    g_cuda_compile_ms = std::chrono::duration<double, std::milli>(__nvrtc_t1-__nvrtc_t0).count();
 
     size_t logSize=0; nvrtcGetProgramLogSize(prog, &logSize);
     if(logSize>1){ std::string log; log.resize(logSize); nvrtcGetProgramLog(prog, log.data()); std::cout << log << std::endl; }
@@ -77,6 +96,7 @@ CudaExecutor::get_or_compile_kernel(const std::string& src, const std::string& e
     auto cached = kernel_cache_.get(key);
     if(cached) {
         std::cout << "[CUDA] Using cached kernel for entry: " << entry << std::endl;
+        g_cuda_compile_ms = 0.0;
         return cached;
     }
 
@@ -92,7 +112,7 @@ CudaExecutor::get_or_compile_kernel(const std::string& src, const std::string& e
     kernel->lastUsed = std::chrono::steady_clock::now();
 
     kernel_cache_.put(key, kernel);
-    std::cout << "[CUDA] Kernel cached (cache size: " << kernel_cache_.size() << ")" << std::endl;
+    std::cout << "[CUDA] Kernel compiled and cached\n";
     return kernel;
 }
 
@@ -111,30 +131,29 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         cuCtxPopCurrent(&dummy);
     };
 
+    // CUDA events for timing
+    cudaEvent_t evH2D0, evH2D1, evK0, evK1, evD2H0, evD2H1;
+    cudaEventCreate(&evH2D0); cudaEventCreate(&evH2D1);
+    cudaEventCreate(&evK0);   cudaEventCreate(&evK1);
+    cudaEventCreate(&evD2H0); cudaEventCreate(&evD2H1);
+
     CUmodule mod=nullptr; CUfunction fun=nullptr;
 
-    char error_log[8192] = {0};
-    char info_log[8192]  = {0};
-    unsigned int err_size = sizeof(error_log);
-    unsigned int inf_size = sizeof(info_log);
-    CUjit_option jit_opts[] = {
-        CU_JIT_ERROR_LOG_BUFFER,
-        CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES,
-        CU_JIT_INFO_LOG_BUFFER,
-        CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES,
-        CU_JIT_LOG_VERBOSE
-    };
-    void* jit_vals[] = {
-        (void*)error_log,
-        (void*)(uintptr_t)err_size,
-        (void*)info_log,
-        (void*)(uintptr_t)inf_size,
-        (void*)1
-    };
+    // JIT options for driver (for PTX -> SASS)
+    CUjit_option options[6];
+    void* optionVals[6];
+    char error_log[8192]; error_log[0]=0;
+    char info_log[8192];  info_log[0]=0;
+    unsigned int logSize=sizeof(error_log), infoSize=sizeof(info_log);
 
-    if(!check(cuModuleLoadDataEx(&mod, ptx.c_str(),
-                                 (unsigned int)(sizeof(jit_opts)/sizeof(jit_opts[0])),
-                                 jit_opts, jit_vals), "cuModuleLoadDataEx")){
+    options[0] = CU_JIT_ERROR_LOG_BUFFER;       optionVals[0] = error_log;
+    options[1] = CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES; optionVals[1] = (void*)(uintptr_t)logSize;
+    options[2] = CU_JIT_INFO_LOG_BUFFER;        optionVals[2] = info_log;
+    options[3] = CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES; optionVals[3] = (void*)(uintptr_t)infoSize;
+    options[4] = CU_JIT_LOG_VERBOSE;            optionVals[4] = (void*)1;
+    options[5] = CU_JIT_FALLBACK_STRATEGY;      optionVals[5] = (void*)CU_PREFER_PTX;
+
+    if(!check(cuModuleLoadDataEx(&mod, ptx.c_str(), 6, options, optionVals), "cuModuleLoadDataEx")){
         if (error_log[0]) std::cerr << "[JIT error] " << error_log << std::endl;
         if (info_log[0])  std::cerr << "[JIT info]  " << info_log  << std::endl;
         pop_ctx();
@@ -148,6 +167,8 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     }
 
     std::vector<CUdeviceptr> dIn(inputs.size());
+    // H2D begin
+    cudaEventRecord(evH2D0, 0);
     for(size_t i=0;i<inputs.size();++i){
         if(!check(cuMemAlloc(&dIn[i], inputs[i].size()),"cuMemAlloc(in)")) {
             for(size_t j=0; j<i; ++j) cuMemFree(dIn[j]);
@@ -162,28 +183,34 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
             return false;
         }
     }
+    // H2D end
+    cudaEventRecord(evH2D1, 0);
+    cudaEventSynchronize(evH2D1);
+    { float ms=0.0f; cudaEventElapsedTime(&ms, evH2D0, evH2D1); g_cuda_h2d_ms = (double)ms; }
 
     std::vector<CUdeviceptr> dOut(outputSizes.size());
     for(size_t i=0;i<outputSizes.size();++i){
-        if(!check(cuMemAlloc(&dOut[i], outputSizes[i]),"cuMemAlloc(out)")) {
+        if(outputSizes[i]==0){ dOut[i]=0; continue; }
+        if(!check(cuMemAlloc(&dOut[i], outputSizes[i]),"cuMemAlloc(out)")){
             for(auto d: dIn) cuMemFree(d);
-            for(size_t j=0; j<i; ++j) cuMemFree(dOut[j]);
+            for(size_t j=0;j<i;++j) cuMemFree(dOut[j]);
             cuModuleUnload(mod);
             pop_ctx();
             return false;
         }
+        check(cuMemsetD8(dOut[i], 0, outputSizes[i]), "cuMemsetD8(out)");
     }
 
-    std::vector<void*> args;
-    std::vector<uint32_t> uniforms32;
-    for(auto& u: uniforms) uniforms32.push_back(static_cast<uint32_t>(u));
-    for(auto& u: uniforms32) args.push_back(&u);
-    for(auto& d: dIn) args.push_back(&d);
-    for(auto& d: dOut) args.push_back(&d);
+    // Build args: uniforms..., inputs..., outputs...
+    std::vector<void*> args; args.reserve(uniforms.size() + dIn.size() + dOut.size());
+    for(auto& u: uniforms) args.push_back((void*)&u);
+    for(auto& d: dIn) args.push_back((void*)&d);
+    for(auto& d: dOut) if(d) args.push_back((void*)&d);
 
     dim3 g(grid.size()>0?grid[0]:1, grid.size()>1?grid[1]:1, grid.size()>2?grid[2]:1);
     dim3 b(block.size()>0?block[0]:1, block.size()>1?block[1]:1, block.size()>2?block[2]:1);
 
+    cudaEventRecord(evK0, 0);
     if(!check(cuLaunchKernel(fun, g.x,g.y,g.z, b.x,b.y,b.z, 0, 0, args.data(), nullptr), "cuLaunchKernel")){
         for(auto d: dIn) cuMemFree(d);
         for(auto d: dOut) cuMemFree(d);
@@ -191,6 +218,9 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         pop_ctx();
         return false;
     }
+    cudaEventRecord(evK1, 0);
+    cudaEventSynchronize(evK1);
+    { float ms=0.0f; cudaEventElapsedTime(&ms, evK0, evK1); g_cuda_kernel_ms = (double)ms; }
 
     if(!check(cuCtxSynchronize(), "cuCtxSynchronize")){
         for(auto d: dIn) cuMemFree(d);
@@ -201,6 +231,8 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     }
 
     outputs.resize(dOut.size());
+    // D2H begin
+    cudaEventRecord(evD2H0, 0);
     for(size_t i=0;i<dOut.size();++i){
         outputs[i].resize(outputSizes[i]);
         if(!check(cuMemcpyDtoH(outputs[i].data(), dOut[i], outputSizes[i]), "cuMemcpyDtoH")){
@@ -212,8 +244,17 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         }
         cuMemFree(dOut[i]);
     }
+    // D2H end
+    cudaEventRecord(evD2H1, 0);
+    cudaEventSynchronize(evD2H1);
+    { float ms=0.0f; cudaEventElapsedTime(&ms, evD2H0, evD2H1); g_cuda_d2h_ms = (double)ms; }
+
     for(auto d: dIn) cuMemFree(d);
     cuModuleUnload(mod);
+    // destroy events
+    cudaEventDestroy(evH2D0); cudaEventDestroy(evH2D1);
+    cudaEventDestroy(evK0);   cudaEventDestroy(evK1);
+    cudaEventDestroy(evD2H0); cudaEventDestroy(evD2H1);
     pop_ctx();
     return true;
 }
@@ -266,7 +307,8 @@ ExecResult CudaExecutor::run_task(const json& task){
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
-    r.ms = std::chrono::duration<double, std::milli>(t1-t0).count();
+    // set kernel GPU time in ms; wall time is still t1-t0 if you need it for logs
+    r.ms = g_cuda_kernel_ms;
     r.ok = true;
     r.outputs = std::move(outputs);
     return r;
@@ -274,8 +316,10 @@ ExecResult CudaExecutor::run_task(const json& task){
 
 CudaExecutor::~CudaExecutor(){
     if(ctx){
-        CUcontext cur = nullptr;
-        if (cuCtxGetCurrent(&cur) == CUDA_SUCCESS && cur == ctx) {
+        CUcontext current = nullptr;
+        cuCtxGetCurrent(&current);
+        if(current != ctx){
+            cuCtxPushCurrent(ctx);
             CUcontext dummy = nullptr;
             cuCtxPopCurrent(&dummy);
         }
