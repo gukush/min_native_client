@@ -310,9 +310,12 @@ ExecResult CudaExecutor::run_task(const json& task){
         std::vector<std::vector<uint8_t>> inputs;
         if(task.contains("inputs") && task["inputs"].is_array()){
             for(auto& it: task["inputs"]){
-                std::string b64 = it.value("data","");
+                std::string b64 = it.value("b64", it.value("data", ""));
                 extern std::vector<uint8_t> base64_decode(const std::string& s);
-                inputs.push_back(base64_decode(b64));
+                std::cout << "[CUDA] Decoding base64 input with length: " << b64.length() << " chars" << std::endl;
+                auto decoded = base64_decode(b64);
+                std::cout << "[CUDA] Decoded input size: " << decoded.size() << " bytes" << std::endl;
+                inputs.push_back(decoded);
             }
         }
 
