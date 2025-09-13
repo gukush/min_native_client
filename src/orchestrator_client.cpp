@@ -402,6 +402,7 @@ json OrchestratorClient::run_executor(const std::string& name, const json& task)
             outputs_array.push_back(base64_encode(output));
         }
         result_json["outputs"] = outputs_array;
+        result_json["results"] = outputs_array;  // Add "results" field for Lua executor compatibility
 
         // For backward compatibility, also include the first output as "result"
         if (!result.outputs.empty() && !result.outputs[0].empty()) {
@@ -606,6 +607,7 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
                         outputs_array.push_back(base64_encode(output));
                     }
                     exec_result["outputs"] = outputs_array;
+                    exec_result["results"] = outputs_array;  // Add "results" field for Lua executor compatibility
 
                     // For backward compatibility, also include the first output as "result"
                     if (!executor_result.outputs.empty() && !executor_result.outputs[0].empty()) {
