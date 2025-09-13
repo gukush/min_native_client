@@ -290,8 +290,28 @@ ExecResult CudaExecutor::run_task(const json& task){
         for(auto& x: task["outputSizes"]) if(x.is_number_unsigned()) outputSizes.push_back(x.get<size_t>());
     }
 
-    std::vector<int> grid = task.value("grid", std::vector<int>{1,1,1});
-    std::vector<int> block = task.value("block", std::vector<int>{16,16,1});
+    std::vector<int> grid = task.value("grid", std::vector<int>{});
+    std::vector<int> block = task.value("block", std::vector<int>{});
+
+    // If grid/block are missing, try to derive from global dimensions
+    if (grid.empty() || block.empty()) {
+        if (task.contains("global")) {
+            if (task["global"].is_array()) {
+                // Global is an array - use it as grid and set reasonable block default
+                grid = task["global"].get<std::vector<int>>();
+                if (block.empty()) block = {16, 16, 1};
+            } else if (task["global"].is_number_integer()) {
+                // Global is a scalar - derive 1D grid
+                const auto G = task["global"].get<long long>();
+                const int TPB = 256;
+                grid = { int(std::max<long long>(1, (G + TPB - 1)/TPB)), 1, 1 };
+                block = { TPB, 1, 1 };
+            }
+        }
+        // Set defaults if still empty
+        if (grid.empty()) grid = {1, 1, 1};
+        if (block.empty()) block = {16, 16, 1};
+    }
 
     // Use cached kernel if available
     auto cached_kernel = get_or_compile_kernel(src, entry);
