@@ -76,7 +76,7 @@ bool CudaExecutor::compileNVRTC(const std::string& src, const std::string& entry
             std::cout << "[CUDA] Failed to detect compute capability, using default 8.9" << std::endl;
         }
     } else {
-        std::cout << "[CUDA] No CUDA context, using default compute capability 8.9" << std::endl; us
+        std::cout << "[CUDA] No CUDA context, using default compute capability 8.9" << std::endl;
     }
 
     // Use sm_XX format instead of compute_XX for better compatibility
