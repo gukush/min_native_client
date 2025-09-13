@@ -320,6 +320,18 @@ ExecResult CudaExecutor::run_task(const json& task){
         std::vector<int> grid = task.value("grid", std::vector<int>{});
         std::vector<int> block = task.value("block", std::vector<int>{});
 
+        std::cout << "[CUDA] Raw task values - grid size: " << grid.size() << ", block size: " << block.size() << std::endl;
+        if (grid.size() > 0) {
+            std::cout << "[CUDA] Raw grid: [" << grid[0];
+            for (size_t i = 1; i < grid.size(); ++i) std::cout << ", " << grid[i];
+            std::cout << "]" << std::endl;
+        }
+        if (block.size() > 0) {
+            std::cout << "[CUDA] Raw block: [" << block[0];
+            for (size_t i = 1; i < block.size(); ++i) std::cout << ", " << block[i];
+            std::cout << "]" << std::endl;
+        }
+
         // If grid/block are missing, try to derive from global dimensions
         if (grid.empty() || block.empty()) {
             if (task.contains("global")) {
