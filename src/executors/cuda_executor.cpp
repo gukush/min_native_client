@@ -321,7 +321,15 @@ ExecResult CudaExecutor::run_task(const json& task){
 
         std::vector<size_t> outputSizes;
         if(task.contains("outputSizes") && task["outputSizes"].is_array()){
-            for(auto& x: task["outputSizes"]) if(x.is_number_unsigned()) outputSizes.push_back(x.get<size_t>());
+            for(auto& x: task["outputSizes"]) {
+                if(x.is_number_unsigned()) {
+                    outputSizes.push_back(x.get<size_t>());
+                } else if(x.is_number_integer()) {
+                    outputSizes.push_back(static_cast<size_t>(x.get<long long>()));
+                } else if(x.is_number_float()) {
+                    outputSizes.push_back(static_cast<size_t>(x.get<double>()));
+                }
+            }
         }
         std::cout << "[CUDA] Parsed outputSizes: ";
         for(size_t i = 0; i < outputSizes.size(); ++i) {
