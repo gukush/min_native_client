@@ -66,20 +66,21 @@ bool CudaExecutor::compileNVRTC(const std::string& src, const std::string& entry
     nvrtcProgram prog{};
     if(!checkNVRTC(nvrtcCreateProgram(&prog, src.c_str(), "kernel.cu", 0, nullptr, nullptr), "nvrtcCreateProgram")) return false;
 
-    int major=7, minor=0;
+    int major=8, minor=9;  // Default to RTX 4070 Ti compute capability
     if(ctx){
         CUdevice dev; cuCtxGetDevice(&dev);
         if(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev) == CUDA_SUCCESS &&
            cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev) == CUDA_SUCCESS) {
             std::cout << "[CUDA] Detected compute capability: " << major << "." << minor << std::endl;
         } else {
-            std::cout << "[CUDA] Failed to detect compute capability, using default 7.0" << std::endl;
+            std::cout << "[CUDA] Failed to detect compute capability, using default 8.9" << std::endl;
         }
     } else {
-        std::cout << "[CUDA] No CUDA context, using default compute capability 7.0" << std::endl;
+        std::cout << "[CUDA] No CUDA context, using default compute capability 8.9" << std::endl; us
     }
 
-    std::string archOpt = std::string("--gpu-architecture=compute_") + std::to_string(major) + std::to_string(minor);
+    // Use sm_XX format instead of compute_XX for better compatibility
+    std::string archOpt = std::string("--gpu-architecture=sm_") + std::to_string(major) + std::to_string(minor);
     std::cout << "[CUDA] NVRTC compilation options: --std=c++14 " << archOpt << std::endl;
     const char* opts[] = {"--std=c++14", archOpt.c_str()};
     auto __nvrtc_t0 = std::chrono::high_resolution_clock::now();
