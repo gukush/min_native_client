@@ -222,11 +222,51 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         check(cuMemsetD8(dOut[i], 0, outputSizes[i]), "cuMemsetD8(out)");
     }
 
+    // Check for in-place flag in input schema (if available)
+    bool inPlace = false;
+    std::vector<bool> inputInPlace(inputs.size(), false); // Track which inputs are in-place
+
+    // Parse schema from task meta to check for inPlace flags on inputs
+    if (task.contains("meta") && task["meta"].is_object()) {
+        auto meta = task["meta"];
+        if (meta.contains("schema") && meta["schema"].is_object()) {
+            auto schema = meta["schema"];
+            if (schema.contains("inputs") && schema["inputs"].is_array()) {
+                auto inputs_schema = schema["inputs"];
+                for (size_t i = 0; i < inputs_schema.size() && i < inputs.size(); ++i) {
+                    if (inputs_schema[i].contains("inPlace") && inputs_schema[i]["inPlace"].is_boolean()) {
+                        inputInPlace[i] = inputs_schema[i]["inPlace"].get<bool>();
+                        if (inputInPlace[i]) {
+                            inPlace = true; // At least one input is in-place
+                            std::cout << "[CUDA] Input " << i << " marked as in-place in schema" << std::endl;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (!inPlace) {
+        std::cout << "[CUDA] No in-place inputs detected, using separate buffer mode" << std::endl;
+    }
+
     // Build args: uniforms..., inputs..., outputs...
     std::vector<void*> args; args.reserve(uniforms.size() + dIn.size() + dOut.size());
     for(auto& u: uniforms) args.push_back((void*)&u);
     for(auto& d: dIn) args.push_back((void*)&d);
-    for(auto& d: dOut) if(d) args.push_back((void*)&d);
+
+    // Handle outputs based on in-place flags
+    for(size_t i = 0; i < dOut.size(); ++i) {
+        if (dOut[i] == 0) continue; // Skip null output buffers
+
+        // If this output corresponds to an in-place input, use the input buffer
+        if (i < inputInPlace.size() && inputInPlace[i] && i < dIn.size()) {
+            args.push_back((void*)&dIn[i]); // Use input buffer as output
+            std::cout << "[CUDA] Output " << i << " in-place: using input buffer as output buffer" << std::endl;
+        } else {
+            args.push_back((void*)&dOut[i]); // Use separate output buffer
+        }
+    }
 
     dim3 g(grid.size()>0?grid[0]:1, grid.size()>1?grid[1]:1, grid.size()>2?grid[2]:1);
     dim3 b(block.size()>0?block[0]:1, block.size()>1?block[1]:1, block.size()>2?block[2]:1);
@@ -274,7 +314,15 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     cudaEventRecord(evD2H0, 0);
     for(size_t i=0;i<dOut.size();++i){
         outputs[i].resize(outputSizes[i]);
-        if(!check(cuMemcpyDtoH(outputs[i].data(), dOut[i], outputSizes[i]), "cuMemcpyDtoH")){
+        CUdeviceptr src = dOut[i];
+
+        // For in-place inputs, read from input buffer instead of output buffer
+        if (i < inputInPlace.size() && inputInPlace[i] && i < dIn.size()) {
+            src = dIn[i];
+            std::cout << "[CUDA] Output " << i << " in-place: reading result from input buffer" << std::endl;
+        }
+
+        if(!check(cuMemcpyDtoH(outputs[i].data(), src, outputSizes[i]), "cuMemcpyDtoH")){
             for(auto d: dIn) cuMemFree(d);
             for(auto d: dOut) cuMemFree(d);
             cuModuleUnload(mod);
