@@ -69,11 +69,20 @@ if(ENABLE_CUDA)
         else()
             # Fallback: try to find CUDA libraries manually
             message(STATUS "CUDA: CUDAToolkit found but imported targets not available, trying manual detection")
-
+            
+            # Set CUDA paths based on common installation locations
+            set(CUDA_SEARCH_PATHS
+                ${CUDAToolkit_LIBRARY_DIR}
+                /usr/local/cuda-13.0/targets/x86_64-linux/lib
+                /usr/local/cuda-11.8/targets/x86_64-linux/lib
+                /usr/local/cuda/lib64
+                /usr/lib/x86_64-linux-gnu
+            )
+            
             # Find CUDA libraries manually
-            find_library(CUDA_DRIVER_LIBRARY NAMES cuda PATHS ${CUDAToolkit_LIBRARY_DIR})
-            find_library(CUDA_NVRTC_LIBRARY NAMES nvrtc PATHS ${CUDAToolkit_LIBRARY_DIR})
-
+            find_library(CUDA_DRIVER_LIBRARY NAMES cuda PATHS ${CUDA_SEARCH_PATHS})
+            find_library(CUDA_NVRTC_LIBRARY NAMES nvrtc PATHS ${CUDA_SEARCH_PATHS})
+            
             if(CUDA_DRIVER_LIBRARY AND CUDA_NVRTC_LIBRARY)
                 target_link_libraries(native_client PRIVATE ${CUDA_DRIVER_LIBRARY} ${CUDA_NVRTC_LIBRARY})
                 target_include_directories(native_client PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
@@ -81,6 +90,8 @@ if(ENABLE_CUDA)
                 message(STATUS "CUDA: Using manual library detection (${CUDA_DRIVER_LIBRARY}, ${CUDA_NVRTC_LIBRARY})")
             else()
                 message(WARNING "CUDA libraries not found, CUDA support disabled")
+                message(STATUS "CUDA: Searched paths: ${CUDA_SEARCH_PATHS}")
+                message(STATUS "CUDA: CUDAToolkit_LIBRARY_DIR: ${CUDAToolkit_LIBRARY_DIR}")
             endif()
         endif()
     else()
