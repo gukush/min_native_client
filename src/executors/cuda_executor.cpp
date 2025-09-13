@@ -178,7 +178,9 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     // H2D begin
     cudaEventRecord(evH2D0, 0);
     for(size_t i=0;i<inputs.size();++i){
+        std::cout << "[CUDA] Allocating input buffer " << i << " with size: " << inputs[i].size() << " bytes" << std::endl;
         if(!check(cuMemAlloc(&dIn[i], inputs[i].size()),"cuMemAlloc(in)")) {
+            std::cerr << "[CUDA] Failed to allocate input buffer " << i << " with size " << inputs[i].size() << " bytes" << std::endl;
             for(size_t j=0; j<i; ++j) cuMemFree(dIn[j]);
             cuModuleUnload(mod);
             pop_ctx();
@@ -199,7 +201,9 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     std::vector<CUdeviceptr> dOut(outputSizes.size());
     for(size_t i=0;i<outputSizes.size();++i){
         if(outputSizes[i]==0){ dOut[i]=0; continue; }
+        std::cout << "[CUDA] Allocating output buffer " << i << " with size: " << outputSizes[i] << " bytes" << std::endl;
         if(!check(cuMemAlloc(&dOut[i], outputSizes[i]),"cuMemAlloc(out)")){
+            std::cerr << "[CUDA] Failed to allocate output buffer " << i << " with size " << outputSizes[i] << " bytes" << std::endl;
             for(auto d: dIn) cuMemFree(d);
             for(size_t j=0;j<i;++j) cuMemFree(dOut[j]);
             cuModuleUnload(mod);
