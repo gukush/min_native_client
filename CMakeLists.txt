@@ -57,63 +57,19 @@ target_link_libraries(native_client PRIVATE
 
 # ---------------- CUDA ----------------
 if(ENABLE_CUDA)
-    # Try to find CUDA toolkit with modern CMake approach first
+    # Shorter logic: prefer CUDAToolkit imported targets if found
     find_package(CUDAToolkit QUIET)
 
     if(CUDAToolkit_FOUND)
-        # Use modern imported targets if available
-        if(TARGET CUDA::nvrtc AND TARGET CUDA::cuda_driver)
-            target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
-            target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
-            message(STATUS "CUDA: Using imported targets (CUDA::nvrtc, CUDA::cuda_driver)")
-        else()
-            # Fallback: try to find libraries manually
-            set(_CUDA_SEARCH_PATHS
-                "$ENV{CUDAToolkit_ROOT}" "$ENV{CUDA_HOME}" "$ENV{CUDA_PATH}"
-                "/usr/local/cuda" "/usr/local/cuda-12.0" "/usr/local/cuda-11.8"
-                "/opt/cuda" "/opt/nvidia/cuda"
-            )
-
-            find_library(CUDA_NVRTC_LIBRARY
-                NAMES nvrtc libnvrtc.so
-                HINTS ${_CUDA_SEARCH_PATHS}
-                PATH_SUFFIXES lib64 lib targets/x86_64-linux/lib
-            )
-
-            find_library(CUDA_DRIVER_LIBRARY
-                NAMES cuda libcuda.so
-                HINTS ${_CUDA_SEARCH_PATHS}
-                PATH_SUFFIXES lib64 lib targets/x86_64-linux/lib targets/x86_64-linux/lib/stubs
-            )
-
-            find_path(CUDA_INCLUDE_DIR
-                NAMES cuda_runtime.h nvrtc.h
-                HINTS ${_CUDA_SEARCH_PATHS}
-                PATH_SUFFIXES include
-            )
-
-            if(CUDA_NVRTC_LIBRARY AND CUDA_DRIVER_LIBRARY)
-                target_link_libraries(native_client PRIVATE ${CUDA_DRIVER_LIBRARY} ${CUDA_NVRTC_LIBRARY})
-                target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
-
-                if(CUDA_INCLUDE_DIR)
-                    target_include_directories(native_client PRIVATE ${CUDA_INCLUDE_DIR})
-                endif()
-
-                # Set RPATH for runtime library discovery
-                get_filename_component(CUDA_LIB_DIR ${CUDA_NVRTC_LIBRARY} DIRECTORY)
-                set_target_properties(native_client PROPERTIES
-                    BUILD_RPATH "${CUDA_LIB_DIR}"
-                    INSTALL_RPATH "${CUDA_LIB_DIR}"
-                )
-
-                message(STATUS "CUDA: Found libraries - Driver: ${CUDA_DRIVER_LIBRARY}, NVRTC: ${CUDA_NVRTC_LIBRARY}")
-            else()
-                message(WARNING "CUDA: Could not find required libraries (libcuda.so and libnvrtc.so)")
-            endif()
-        endif()
+        # Link the common CUDA imported targets (may require a modern CMake/CUDA package)
+        # This is intentionally short: if the imported targets exist, link them and enable HAVE_CUDA.
+        # If the targets are not provided by the CUDAToolkit package on the platform, 
+        # this minimal path may fail — keeping it short per your request.
+        target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
+        target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
+        message(STATUS "CUDA: Using CUDAToolkit imported targets (CUDA::cuda_driver, CUDA::nvrtc)")
     else()
-        message(WARNING "CUDA: CUDAToolkit not found, CUDA support disabled")
+        message(WARNING "CUDAToolkit not found, CUDA support disabled")
     endif()
 endif()
 
@@ -182,7 +138,6 @@ if(ENABLE_VULKAN)
     endif()
 endif()
 
-# ---------------- Lua host (sol2 + LuaJIT) ----------------
 # ---------------- Lua host (sol2 + LuaJIT) ----------------
 if(ENABLE_LUA)
     # sol2 itself (header-only target)
@@ -294,6 +249,5 @@ if(ENABLE_LUA)
             "or provide -DLUA_INCLUDE_DIR and -DLUA_LIBRARY.")
     endif()
 endif()
-
 
 # Keep build small: no install rules
