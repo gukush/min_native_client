@@ -210,8 +210,20 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     dim3 g(grid.size()>0?grid[0]:1, grid.size()>1?grid[1]:1, grid.size()>2?grid[2]:1);
     dim3 b(block.size()>0?block[0]:1, block.size()>1?block[1]:1, block.size()>2?block[2]:1);
 
+    std::cout << "[CUDA] Launch parameters:" << std::endl;
+    std::cout << "[CUDA]   Grid: (" << g.x << ", " << g.y << ", " << g.z << ")" << std::endl;
+    std::cout << "[CUDA]   Block: (" << b.x << ", " << b.y << ", " << b.z << ")" << std::endl;
+    std::cout << "[CUDA]   Total threads: " << (g.x * g.y * g.z * b.x * b.y * b.z) << std::endl;
+    std::cout << "[CUDA]   Arguments: " << args.size() << " (uniforms: " << uniforms.size()
+              << ", inputs: " << dIn.size() << ", outputs: " << dOut.size() << ")" << std::endl;
+
     cudaEventRecord(evK0, 0);
     if(!check(cuLaunchKernel(fun, g.x,g.y,g.z, b.x,b.y,b.z, 0, 0, args.data(), nullptr), "cuLaunchKernel")){
+        std::cerr << "[CUDA] Kernel launch failed with parameters:" << std::endl;
+        std::cerr << "[CUDA]   Grid: (" << g.x << ", " << g.y << ", " << g.z << ")" << std::endl;
+        std::cerr << "[CUDA]   Block: (" << b.x << ", " << b.y << ", " << b.z << ")" << std::endl;
+        std::cerr << "[CUDA]   Entry point: " << entry << std::endl;
+        std::cerr << "[CUDA]   Arguments count: " << args.size() << std::endl;
         for(auto d: dIn) cuMemFree(d);
         for(auto d: dOut) cuMemFree(d);
         cuModuleUnload(mod);
@@ -223,6 +235,12 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     { float ms=0.0f; cudaEventElapsedTime(&ms, evK0, evK1); g_cuda_kernel_ms = (double)ms; }
 
     if(!check(cuCtxSynchronize(), "cuCtxSynchronize")){
+        std::cerr << "[CUDA] Context synchronization failed after kernel launch" << std::endl;
+        std::cerr << "[CUDA] This usually indicates a kernel execution error (e.g., illegal memory access)" << std::endl;
+        std::cerr << "[CUDA] Kernel parameters were:" << std::endl;
+        std::cerr << "[CUDA]   Grid: (" << g.x << ", " << g.y << ", " << g.z << ")" << std::endl;
+        std::cerr << "[CUDA]   Block: (" << b.x << ", " << b.y << ", " << b.z << ")" << std::endl;
+        std::cerr << "[CUDA]   Entry point: " << entry << std::endl;
         for(auto d: dIn) cuMemFree(d);
         for(auto d: dOut) cuMemFree(d);
         cuModuleUnload(mod);

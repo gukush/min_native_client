@@ -439,10 +439,23 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
             // Pass workload framework and config to lua script
             std::string workload_fw = current_workload_.value("framework", "");
             json workload_config = current_workload_.value("config", json::object());
-            if (!workload_fw.empty()) {
-                exec_result = lua_->compile_and_run(chunk, workload_fw, workload_config);
-            } else {
-                exec_result = lua_->compile_and_run(chunk);
+            try {
+                if (!workload_fw.empty()) {
+                    exec_result = lua_->compile_and_run(chunk, workload_fw, workload_config);
+                } else {
+                    exec_result = lua_->compile_and_run(chunk);
+                }
+            } catch (const std::runtime_error& e) {
+                std::cerr << "[client] Lua runtime error: " << e.what() << std::endl;
+                std::cerr << "[client] This might be a C++ exception from executor called by Lua" << std::endl;
+                throw; // Re-throw to be caught by outer exception handler
+            } catch (const std::exception& e) {
+                std::cerr << "[client] Lua standard exception: " << e.what() << std::endl;
+                std::cerr << "[client] Exception type: " << typeid(e).name() << std::endl;
+                throw; // Re-throw to be caught by outer exception handler
+            } catch (...) {
+                std::cerr << "[client] Lua unknown exception - this might be a C++ exception from executor" << std::endl;
+                throw; // Re-throw to be caught by outer exception handler
             }
         } else
 #endif
@@ -482,7 +495,21 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
                 }
                 std::cout << std::endl;
 
-                ExecResult executor_result = exe->run_task(task_for_executor);
+                ExecResult executor_result;
+                try {
+                    executor_result = exe->run_task(task_for_executor);
+                } catch (const std::runtime_error& e) {
+                    std::cerr << "[client] Binary executor runtime error: " << e.what() << std::endl;
+                    std::cerr << "[client] Exception type: std::runtime_error" << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                } catch (const std::exception& e) {
+                    std::cerr << "[client] Binary executor standard exception: " << e.what() << std::endl;
+                    std::cerr << "[client] Exception type: " << typeid(e).name() << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                } catch (...) {
+                    std::cerr << "[client] Binary executor unknown exception" << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                }
 
                 // Convert ExecResult to JSON format
                 exec_result["ok"] = executor_result.ok;
@@ -515,12 +542,38 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
                 // Use framework-specific executor (opencl, cuda, vulkan) for non-exe frameworks
                 std::cout << "[client] Using framework executor: " << framework << std::endl;
                 const auto& payload = chunk.value("payload", json::object());
-                exec_result = run_executor(framework, payload);
+                try {
+                    exec_result = run_executor(framework, payload);
+                } catch (const std::runtime_error& e) {
+                    std::cerr << "[client] " << framework << " executor runtime error: " << e.what() << std::endl;
+                    std::cerr << "[client] Exception type: std::runtime_error" << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                } catch (const std::exception& e) {
+                    std::cerr << "[client] " << framework << " executor standard exception: " << e.what() << std::endl;
+                    std::cerr << "[client] Exception type: " << typeid(e).name() << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                } catch (...) {
+                    std::cerr << "[client] " << framework << " executor unknown exception" << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                }
             } else {
                 // Fallback to binary executor
                 std::cout << "[client] Using binary executor (fallback)" << std::endl;
                 const auto& payload = chunk.value("payload", json::object());
-                exec_result = run_executor("binary", payload);
+                try {
+                    exec_result = run_executor("binary", payload);
+                } catch (const std::runtime_error& e) {
+                    std::cerr << "[client] Binary executor (fallback) runtime error: " << e.what() << std::endl;
+                    std::cerr << "[client] Exception type: std::runtime_error" << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                } catch (const std::exception& e) {
+                    std::cerr << "[client] Binary executor (fallback) standard exception: " << e.what() << std::endl;
+                    std::cerr << "[client] Exception type: " << typeid(e).name() << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                } catch (...) {
+                    std::cerr << "[client] Binary executor (fallback) unknown exception" << std::endl;
+                    throw; // Re-throw to be caught by outer exception handler
+                }
             }
         }
 
@@ -575,14 +628,46 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
                                  executor_meta["strategy"].get<std::string>(),
                                  executor_meta, timings_meta,
                                  t_recv_ms, t_send_ms);
+    } catch (const std::runtime_error& e) {
+        std::cerr << "[client] Runtime error in chunk processing: " << e.what() << std::endl;
+        std::cerr << "[client] Exception type: std::runtime_error" << std::endl;
+        std::cerr << "[client] Chunk info - taskId: " << chunk.value("taskId", "unknown")
+                  << ", chunkId: " << chunk.value("chunkId", "unknown") << std::endl;
+        std::cerr << "[client] Framework: " << framework << ", Action: " << action << std::endl;
+        const auto t_send_ms = now_ms_epoch();
+        send_chunk_error_enhanced(chunk, std::string("Runtime error: ") + e.what(), t_recv_ms, t_send_ms);
+    } catch (const std::logic_error& e) {
+        std::cerr << "[client] Logic error in chunk processing: " << e.what() << std::endl;
+        std::cerr << "[client] Exception type: std::logic_error" << std::endl;
+        std::cerr << "[client] Chunk info - taskId: " << chunk.value("taskId", "unknown")
+                  << ", chunkId: " << chunk.value("chunkId", "unknown") << std::endl;
+        std::cerr << "[client] Framework: " << framework << ", Action: " << action << std::endl;
+        const auto t_send_ms = now_ms_epoch();
+        send_chunk_error_enhanced(chunk, std::string("Logic error: ") + e.what(), t_recv_ms, t_send_ms);
+    } catch (const std::bad_alloc& e) {
+        std::cerr << "[client] Memory allocation error in chunk processing: " << e.what() << std::endl;
+        std::cerr << "[client] Exception type: std::bad_alloc" << std::endl;
+        std::cerr << "[client] Chunk info - taskId: " << chunk.value("taskId", "unknown")
+                  << ", chunkId: " << chunk.value("chunkId", "unknown") << std::endl;
+        std::cerr << "[client] Framework: " << framework << ", Action: " << action << std::endl;
+        const auto t_send_ms = now_ms_epoch();
+        send_chunk_error_enhanced(chunk, std::string("Memory allocation error: ") + e.what(), t_recv_ms, t_send_ms);
     } catch (const std::exception& e) {
-        std::cout << "[client] Chunk processing error: " << e.what() << std::endl;
+        std::cerr << "[client] Standard exception in chunk processing: " << e.what() << std::endl;
+        std::cerr << "[client] Exception type: " << typeid(e).name() << std::endl;
+        std::cerr << "[client] Chunk info - taskId: " << chunk.value("taskId", "unknown")
+                  << ", chunkId: " << chunk.value("chunkId", "unknown") << std::endl;
+        std::cerr << "[client] Framework: " << framework << ", Action: " << action << std::endl;
         const auto t_send_ms = now_ms_epoch();
-        send_chunk_error_enhanced(chunk, e.what(), t_recv_ms, t_send_ms);
+        send_chunk_error_enhanced(chunk, std::string("Standard exception: ") + e.what(), t_recv_ms, t_send_ms);
     } catch (...) {
-        std::cout << "[client] Unknown chunk processing error" << std::endl;
+        std::cerr << "[client] Unknown exception type in chunk processing" << std::endl;
+        std::cerr << "[client] This might be a C++ exception that doesn't inherit from std::exception" << std::endl;
+        std::cerr << "[client] Chunk info - taskId: " << chunk.value("taskId", "unknown")
+                  << ", chunkId: " << chunk.value("chunkId", "unknown") << std::endl;
+        std::cerr << "[client] Framework: " << framework << ", Action: " << action << std::endl;
         const auto t_send_ms = now_ms_epoch();
-        send_chunk_error_enhanced(chunk, "unknown error", t_recv_ms, t_send_ms);
+        send_chunk_error_enhanced(chunk, "Unknown C++ exception (not derived from std::exception)", t_recv_ms, t_send_ms);
     }
 }
 
