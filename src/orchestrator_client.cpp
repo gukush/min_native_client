@@ -310,23 +310,59 @@ void OrchestratorClient::maybe_load_host_lua_from_workload(const json& workload)
 // --------------------- executors ---------------------
 
 IExecutor* OrchestratorClient::get_executor(const std::string& name) {
+    std::cout << "[client] get_executor called for: " << name << std::endl;
+
     auto it = executors_.find(name);
-    if (it != executors_.end()) return it->second.get();
+    if (it != executors_.end()) {
+        std::cout << "[client] Found existing executor for: " << name << std::endl;
+        return it->second.get();
+    }
 
     std::unique_ptr<IExecutor> exe;
-    if (name == "binary") exe = std::make_unique<BinaryExecutor>();
+    if (name == "binary") {
+        std::cout << "[client] Creating BinaryExecutor" << std::endl;
+        exe = std::make_unique<BinaryExecutor>();
+    }
 #ifdef HAVE_CUDA
-    else if (name == "cuda") exe = std::make_unique<CudaExecutor>();
+    else if (name == "cuda") {
+        std::cout << "[client] Creating CudaExecutor (HAVE_CUDA defined)" << std::endl;
+        exe = std::make_unique<CudaExecutor>();
+    }
+#else
+    else if (name == "cuda") {
+        std::cout << "[client] CUDA executor requested but HAVE_CUDA not defined" << std::endl;
+        return nullptr;
+    }
 #endif
 #ifdef HAVE_OPENCL
-    else if (name == "opencl") exe = std::make_unique<OpenCLExecutor>();
+    else if (name == "opencl") {
+        std::cout << "[client] Creating OpenCLExecutor (HAVE_OPENCL defined)" << std::endl;
+        exe = std::make_unique<OpenCLExecutor>();
+    }
 #endif
 #ifdef HAVE_VULKAN
-    else if (name == "vulkan") exe = std::make_unique<VulkanExecutor>();
+    else if (name == "vulkan") {
+        std::cout << "[client] Creating VulkanExecutor (HAVE_VULKAN defined)" << std::endl;
+        exe = std::make_unique<VulkanExecutor>();
+    }
 #endif
-    else return nullptr;
+    else {
+        std::cout << "[client] Unknown executor type: " << name << std::endl;
+        return nullptr;
+    }
 
-    if (!exe->initialize(json::object())) return nullptr;
+    if (!exe) {
+        std::cout << "[client] Failed to create executor for: " << name << std::endl;
+        return nullptr;
+    }
+
+    std::cout << "[client] Initializing executor for: " << name << std::endl;
+    if (!exe->initialize(json::object())) {
+        std::cout << "[client] Executor initialization failed for: " << name << std::endl;
+        return nullptr;
+    }
+
+    std::cout << "[client] Executor created and initialized successfully for: " << name << std::endl;
     auto* raw = exe.get();
     executors_.emplace(name, std::move(exe));
     return raw;

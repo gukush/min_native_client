@@ -57,17 +57,32 @@ target_link_libraries(native_client PRIVATE
 
 # ---------------- CUDA ----------------
 if(ENABLE_CUDA)
-    # Shorter logic: prefer CUDAToolkit imported targets if found
+    # Try to find CUDA toolkit
     find_package(CUDAToolkit QUIET)
 
     if(CUDAToolkit_FOUND)
-        # Link the common CUDA imported targets (may require a modern CMake/CUDA package)
-        # This is intentionally short: if the imported targets exist, link them and enable HAVE_CUDA.
-        # If the targets are not provided by the CUDAToolkit package on the platform, 
-        # this minimal path may fail — keeping it short per your request.
-        target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
-        target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
-        message(STATUS "CUDA: Using CUDAToolkit imported targets (CUDA::cuda_driver, CUDA::nvrtc)")
+        # Check if the required targets exist before linking
+        if(TARGET CUDA::cuda_driver AND TARGET CUDA::nvrtc)
+            target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
+            target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
+            message(STATUS "CUDA: Using CUDAToolkit imported targets (CUDA::cuda_driver, CUDA::nvrtc)")
+        else()
+            # Fallback: try to find CUDA libraries manually
+            message(STATUS "CUDA: CUDAToolkit found but imported targets not available, trying manual detection")
+
+            # Find CUDA libraries manually
+            find_library(CUDA_DRIVER_LIBRARY NAMES cuda PATHS ${CUDAToolkit_LIBRARY_DIR})
+            find_library(CUDA_NVRTC_LIBRARY NAMES nvrtc PATHS ${CUDAToolkit_LIBRARY_DIR})
+
+            if(CUDA_DRIVER_LIBRARY AND CUDA_NVRTC_LIBRARY)
+                target_link_libraries(native_client PRIVATE ${CUDA_DRIVER_LIBRARY} ${CUDA_NVRTC_LIBRARY})
+                target_include_directories(native_client PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+                target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
+                message(STATUS "CUDA: Using manual library detection (${CUDA_DRIVER_LIBRARY}, ${CUDA_NVRTC_LIBRARY})")
+            else()
+                message(WARNING "CUDA libraries not found, CUDA support disabled")
+            endif()
+        endif()
     else()
         message(WARNING "CUDAToolkit not found, CUDA support disabled")
     endif()
