@@ -323,6 +323,11 @@ ExecResult CudaExecutor::run_task(const json& task){
         if(task.contains("outputSizes") && task["outputSizes"].is_array()){
             for(auto& x: task["outputSizes"]) if(x.is_number_unsigned()) outputSizes.push_back(x.get<size_t>());
         }
+        std::cout << "[CUDA] Parsed outputSizes: ";
+        for(size_t i = 0; i < outputSizes.size(); ++i) {
+            std::cout << outputSizes[i] << " ";
+        }
+        std::cout << "(" << outputSizes.size() << " outputs)" << std::endl;
 
         std::vector<int> grid = task.value("grid", std::vector<int>{});
         std::vector<int> block = task.value("block", std::vector<int>{});
