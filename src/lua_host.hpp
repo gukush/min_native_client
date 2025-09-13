@@ -18,6 +18,8 @@ public:
     bool has_compile_and_run() const;
     // Calls compile_and_run(chunk) in Lua. Chunk is passed as a Lua table.
     json compile_and_run(const json& chunk);
+    // Calls compile_and_run(chunk) in Lua with workload framework and config available.
+    json compile_and_run(const json& chunk, const std::string& workload_framework, const json& workload_config);
 
     // conversions (public for helper functions)
     static json to_json(sol::object v);

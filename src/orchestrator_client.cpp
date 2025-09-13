@@ -436,7 +436,14 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
 #ifdef HAVE_LUA
         if (lua_ready_) {
             std::cout<< "[client] executing chunk with Lua" <<std::endl;
-            exec_result = lua_->compile_and_run(chunk);
+            // Pass workload framework and config to lua script
+            std::string workload_fw = current_workload_.value("framework", "");
+            json workload_config = current_workload_.value("config", json::object());
+            if (!workload_fw.empty()) {
+                exec_result = lua_->compile_and_run(chunk, workload_fw, workload_config);
+            } else {
+                exec_result = lua_->compile_and_run(chunk);
+            }
         } else
 #endif
         {
