@@ -424,18 +424,42 @@ ExecResult CudaExecutor::run_task(const json& task){
                   << ", " << (block.size() > 2 ? std::to_string(block[2]) : "1") << "]" << std::endl;
 
         // Parse schema to check for in-place flags on inputs
+        // Check both workload-level schema and task-level meta schema
         std::vector<bool> inputInPlace(inputs.size(), false);
-        if (task.contains("meta") && task["meta"].is_object()) {
-            auto meta = task["meta"];
-            if (meta.contains("schema") && meta["schema"].is_object()) {
-                auto schema = meta["schema"];
+
+        // First try workload-level schema
+        if (task.contains("workload") && task["workload"].is_object()) {
+            auto workload = task["workload"];
+            if (workload.contains("schema") && workload["schema"].is_object()) {
+                auto schema = workload["schema"];
                 if (schema.contains("inputs") && schema["inputs"].is_array()) {
                     auto inputs_schema = schema["inputs"];
                     for (size_t i = 0; i < inputs_schema.size() && i < inputs.size(); ++i) {
                         if (inputs_schema[i].contains("inPlace") && inputs_schema[i]["inPlace"].is_boolean()) {
                             inputInPlace[i] = inputs_schema[i]["inPlace"].get<bool>();
                             if (inputInPlace[i]) {
-                                std::cout << "[CUDA] Input " << i << " marked as in-place in schema" << std::endl;
+                                std::cout << "[CUDA] Input " << i << " marked as in-place in workload schema" << std::endl;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback to task-level meta schema if workload schema not found
+        if (!std::any_of(inputInPlace.begin(), inputInPlace.end(), [](bool x) { return x; })) {
+            if (task.contains("meta") && task["meta"].is_object()) {
+                auto meta = task["meta"];
+                if (meta.contains("schema") && meta["schema"].is_object()) {
+                    auto schema = meta["schema"];
+                    if (schema.contains("inputs") && schema["inputs"].is_array()) {
+                        auto inputs_schema = schema["inputs"];
+                        for (size_t i = 0; i < inputs_schema.size() && i < inputs.size(); ++i) {
+                            if (inputs_schema[i].contains("inPlace") && inputs_schema[i]["inPlace"].is_boolean()) {
+                                inputInPlace[i] = inputs_schema[i]["inPlace"].get<bool>();
+                                if (inputInPlace[i]) {
+                                    std::cout << "[CUDA] Input " << i << " marked as in-place in task meta schema" << std::endl;
+                                }
                             }
                         }
                     }
