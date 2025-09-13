@@ -263,7 +263,25 @@ void OrchestratorClient::maybe_load_host_lua_from_workload(const json& workload)
 
     // Provide the callback that actually runs an executor
     auto cb = [this](const std::string& fw, const json& task) -> json {
-        return this->run_executor(fw, task);
+        std::cout << "[client] Lua callback called with framework: " << fw << std::endl;
+        std::cout << "[client] Lua callback task keys: ";
+        for (auto& [key, value] : task.items()) {
+            std::cout << key << " ";
+        }
+        std::cout << std::endl;
+
+        try {
+            json result = this->run_executor(fw, task);
+            std::cout << "[client] Lua callback executor completed successfully" << std::endl;
+            return result;
+        } catch (const std::exception& e) {
+            std::cerr << "[client] Lua callback executor exception: " << e.what() << std::endl;
+            std::cerr << "[client] Exception type: " << typeid(e).name() << std::endl;
+            throw; // Re-throw to be caught by Lua host
+        } catch (...) {
+            std::cerr << "[client] Lua callback executor unknown exception" << std::endl;
+            throw; // Re-throw to be caught by Lua host
+        }
     };
 
     if (!lua_->load(*src, cb)) {
@@ -318,7 +336,21 @@ json OrchestratorClient::run_executor(const std::string& name, const json& task)
     auto* exe = get_executor(name);
     if (!exe) throw std::runtime_error("Executor not available: " + name);
 
-    ExecResult result = exe->run_task(task);
+    ExecResult result;
+    try {
+        result = exe->run_task(task);
+    } catch (const std::runtime_error& e) {
+        std::cerr << "[client] " << name << " executor runtime error: " << e.what() << std::endl;
+        std::cerr << "[client] Exception type: std::runtime_error" << std::endl;
+        throw; // Re-throw to be caught by outer exception handler
+    } catch (const std::exception& e) {
+        std::cerr << "[client] " << name << " executor standard exception: " << e.what() << std::endl;
+        std::cerr << "[client] Exception type: " << typeid(e).name() << std::endl;
+        throw; // Re-throw to be caught by outer exception handler
+    } catch (...) {
+        std::cerr << "[client] " << name << " executor unknown exception" << std::endl;
+        throw; // Re-throw to be caught by outer exception handler
+    }
 
     // Convert ExecResult to JSON format
     json result_json;
@@ -444,11 +476,18 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
             std::string workload_fw = current_workload_.value("framework", "");
             json workload_config = current_workload_.value("config", json::object());
             try {
+                std::cout << "[client] About to call Lua compile_and_run" << std::endl;
                 if (!workload_fw.empty()) {
                     exec_result = lua_->compile_and_run(chunk, workload_fw, workload_config);
                 } else {
                     exec_result = lua_->compile_and_run(chunk);
                 }
+                std::cout << "[client] Lua compile_and_run completed successfully" << std::endl;
+                std::cout << "[client] Exec result keys: ";
+                for (auto& [key, value] : exec_result.items()) {
+                    std::cout << key << " ";
+                }
+                std::cout << std::endl;
             } catch (const std::runtime_error& e) {
                 std::cerr << "[client] Lua runtime error: " << e.what() << std::endl;
                 std::cerr << "[client] This might be a C++ exception from executor called by Lua" << std::endl;
