@@ -397,6 +397,10 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
     const auto t_recv_ms = now_ms_epoch();
     const auto started = std::chrono::high_resolution_clock::now();
 
+    // Declare variables outside try block so they're accessible in catch blocks
+    std::string framework;
+    std::string action;
+
     try {
         const auto meta    = chunk.value("meta",    json::object());
         const auto payload = chunk.value("payload", json::object());
@@ -411,13 +415,13 @@ void OrchestratorClient::process_chunk_impl(const json& chunk) {
         return s;
         };
 
-        std::string framework = get_str(payload, "framework");
+        framework = get_str(payload, "framework");
         if (framework.empty()) framework = get_str(chunk, "framework");
         if (framework.empty()) framework = get_str(meta,   "framework");
         if (framework.empty()) framework = get_str(meta,   "backend");
         framework = norm(framework);
 
-        std::string action = norm(get_str(payload, "action")); // e.g., "exec", "compile_and_run", "cpu_matmul"
+        action = norm(get_str(payload, "action")); // e.g., "exec", "compile_and_run", "cpu_matmul"
 
         std::string workload_framework;
         if (!current_workload_.is_null()) {
