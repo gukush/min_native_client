@@ -138,7 +138,8 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
                 const std::vector<std::vector<uint8_t>>& inputs,
                 const std::vector<size_t>& outputSizes,
                 const std::vector<int>& grid, const std::vector<int>& block,
-                std::vector<std::vector<uint8_t>>& outputs){
+                std::vector<std::vector<uint8_t>>& outputs,
+                const std::vector<bool>& inputInPlace){
 
     CUcontext pushed = nullptr;
     if(!check(cuCtxPushCurrent(ctx), "cuCtxPushCurrent")) return false;
@@ -222,27 +223,12 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         check(cuMemsetD8(dOut[i], 0, outputSizes[i]), "cuMemsetD8(out)");
     }
 
-    // Check for in-place flag in input schema (if available)
+    // Check if any inputs are marked as in-place
     bool inPlace = false;
-    std::vector<bool> inputInPlace(inputs.size(), false); // Track which inputs are in-place
-
-    // Parse schema from task meta to check for inPlace flags on inputs
-    if (task.contains("meta") && task["meta"].is_object()) {
-        auto meta = task["meta"];
-        if (meta.contains("schema") && meta["schema"].is_object()) {
-            auto schema = meta["schema"];
-            if (schema.contains("inputs") && schema["inputs"].is_array()) {
-                auto inputs_schema = schema["inputs"];
-                for (size_t i = 0; i < inputs_schema.size() && i < inputs.size(); ++i) {
-                    if (inputs_schema[i].contains("inPlace") && inputs_schema[i]["inPlace"].is_boolean()) {
-                        inputInPlace[i] = inputs_schema[i]["inPlace"].get<bool>();
-                        if (inputInPlace[i]) {
-                            inPlace = true; // At least one input is in-place
-                            std::cout << "[CUDA] Input " << i << " marked as in-place in schema" << std::endl;
-                        }
-                    }
-                }
-            }
+    for (size_t i = 0; i < inputInPlace.size(); ++i) {
+        if (inputInPlace[i]) {
+            inPlace = true;
+            std::cout << "[CUDA] Input " << i << " marked as in-place" << std::endl;
         }
     }
 
@@ -437,6 +423,26 @@ ExecResult CudaExecutor::run_task(const json& task){
                   << ", " << (block.size() > 1 ? std::to_string(block[1]) : "1")
                   << ", " << (block.size() > 2 ? std::to_string(block[2]) : "1") << "]" << std::endl;
 
+        // Parse schema to check for in-place flags on inputs
+        std::vector<bool> inputInPlace(inputs.size(), false);
+        if (task.contains("meta") && task["meta"].is_object()) {
+            auto meta = task["meta"];
+            if (meta.contains("schema") && meta["schema"].is_object()) {
+                auto schema = meta["schema"];
+                if (schema.contains("inputs") && schema["inputs"].is_array()) {
+                    auto inputs_schema = schema["inputs"];
+                    for (size_t i = 0; i < inputs_schema.size() && i < inputs.size(); ++i) {
+                        if (inputs_schema[i].contains("inPlace") && inputs_schema[i]["inPlace"].is_boolean()) {
+                            inputInPlace[i] = inputs_schema[i]["inPlace"].get<bool>();
+                            if (inputInPlace[i]) {
+                                std::cout << "[CUDA] Input " << i << " marked as in-place in schema" << std::endl;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Use cached kernel if available
         auto cached_kernel = get_or_compile_kernel(src, entry);
         if(!cached_kernel){
@@ -445,7 +451,7 @@ ExecResult CudaExecutor::run_task(const json& task){
         }
 
         std::vector<std::vector<uint8_t>> outputs;
-        if(!launch(cached_kernel->kernel.ptx, entry, uniforms, inputs, outputSizes, grid, block, outputs)){
+        if(!launch(cached_kernel->kernel.ptx, entry, uniforms, inputs, outputSizes, grid, block, outputs, inputInPlace)){
             r.error="CUDA kernel launch failed";
             return r;
         }

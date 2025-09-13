@@ -36,7 +36,8 @@ private:
                 const std::vector<std::vector<uint8_t>>& inputs,
                 const std::vector<size_t>& outputSizes,
                 const std::vector<int>& grid, const std::vector<int>& block,
-                std::vector<std::vector<uint8_t>>& outputs);
+                std::vector<std::vector<uint8_t>>& outputs,
+                const std::vector<bool>& inputInPlace);
     bool check(CUresult res, const char* what);
     bool checkNVRTC(nvrtcResult res, const char* what);
     CUdevice device_ = 0;
