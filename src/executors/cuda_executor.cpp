@@ -81,10 +81,20 @@ bool CudaExecutor::compileNVRTC(const std::string& src, const std::string& entry
 
     // Use sm_XX format instead of compute_XX for better compatibility
     std::string archOpt = std::string("--gpu-architecture=sm_") + std::to_string(major) + std::to_string(minor);
-    std::cout << "[CUDA] NVRTC compilation options: --std=c++14 " << archOpt << std::endl;
-    const char* opts[] = {"--std=c++14", archOpt.c_str()};
+
+    // Add include paths for standard headers and CUDA headers
+    const char* opts[] = {
+        "--std=c++14",
+        archOpt.c_str(),
+        "-I/usr/include",
+        "-I/usr/local/cuda/include",
+        "-I/opt/cuda/include",
+        "-I/usr/local/cuda/targets/x86_64-linux/include",
+        "-I/opt/cuda/targets/x86_64-linux/include"
+    };
+    std::cout << "[CUDA] NVRTC compilation options: --std=c++14 " << archOpt << " -I/usr/include -I/usr/local/cuda/include -I/opt/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -I/opt/cuda/targets/x86_64-linux/include" << std::endl;
     auto __nvrtc_t0 = std::chrono::high_resolution_clock::now();
-    auto r = nvrtcCompileProgram(prog, int(std::size(opts)), opts);
+    auto r = nvrtcCompileProgram(prog, 7, opts);
     auto __nvrtc_t1 = std::chrono::high_resolution_clock::now();
     g_cuda_compile_ms = std::chrono::duration<double, std::milli>(__nvrtc_t1-__nvrtc_t0).count();
 
