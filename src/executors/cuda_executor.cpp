@@ -282,74 +282,97 @@ ExecResult CudaExecutor::run_task(const json& task){
     std::cout << "[CUDA] Task JSON: " << task.dump(2) << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    std::string src = task.value("source","");
-    std::string entry = task.value("entry","main");
+    try {
+        std::string src = task.value("source","");
+        std::string entry = task.value("entry","main");
 
-    std::vector<uint64_t> uniforms;
-    if(task.contains("uniforms") && task["uniforms"].is_array()){
-        for(auto& v: task["uniforms"]){
-            if(v.is_number_unsigned()) uniforms.push_back(v.get<uint64_t>());
-            else if(v.is_number_integer()) uniforms.push_back((uint64_t)v.get<long long>());
-            else if(v.is_number_float()){ double d=v.get<double>(); uint64_t u; std::memcpy(&u,&d,sizeof(double)); uniforms.push_back(u); }
-        }
-    }
-
-    std::vector<std::vector<uint8_t>> inputs;
-    if(task.contains("inputs") && task["inputs"].is_array()){
-        for(auto& it: task["inputs"]){
-            std::string b64 = it.value("data","");
-            extern std::vector<uint8_t> base64_decode(const std::string& s);
-            inputs.push_back(base64_decode(b64));
-        }
-    }
-
-    std::vector<size_t> outputSizes;
-    if(task.contains("outputSizes") && task["outputSizes"].is_array()){
-        for(auto& x: task["outputSizes"]) if(x.is_number_unsigned()) outputSizes.push_back(x.get<size_t>());
-    }
-
-    std::vector<int> grid = task.value("grid", std::vector<int>{});
-    std::vector<int> block = task.value("block", std::vector<int>{});
-
-    // If grid/block are missing, try to derive from global dimensions
-    if (grid.empty() || block.empty()) {
-        if (task.contains("global")) {
-            if (task["global"].is_array()) {
-                // Global is an array - use it as grid and set reasonable block default
-                grid = task["global"].get<std::vector<int>>();
-                if (block.empty()) block = {16, 16, 1};
-            } else if (task["global"].is_number_integer()) {
-                // Global is a scalar - derive 1D grid
-                const auto G = task["global"].get<long long>();
-                const int TPB = 256;
-                grid = { int(std::max<long long>(1, (G + TPB - 1)/TPB)), 1, 1 };
-                block = { TPB, 1, 1 };
+        std::vector<uint64_t> uniforms;
+        if(task.contains("uniforms") && task["uniforms"].is_array()){
+            for(auto& v: task["uniforms"]){
+                if(v.is_number_unsigned()) uniforms.push_back(v.get<uint64_t>());
+                else if(v.is_number_integer()) uniforms.push_back((uint64_t)v.get<long long>());
+                else if(v.is_number_float()){ double d=v.get<double>(); uint64_t u; std::memcpy(&u,&d,sizeof(double)); uniforms.push_back(u); }
             }
         }
-        // Set defaults if still empty
-        if (grid.empty()) grid = {1, 1, 1};
-        if (block.empty()) block = {16, 16, 1};
-    }
 
-    // Use cached kernel if available
-    auto cached_kernel = get_or_compile_kernel(src, entry);
-    if(!cached_kernel){
-        r.error="compile failed";
+        std::vector<std::vector<uint8_t>> inputs;
+        if(task.contains("inputs") && task["inputs"].is_array()){
+            for(auto& it: task["inputs"]){
+                std::string b64 = it.value("data","");
+                extern std::vector<uint8_t> base64_decode(const std::string& s);
+                inputs.push_back(base64_decode(b64));
+            }
+        }
+
+        std::vector<size_t> outputSizes;
+        if(task.contains("outputSizes") && task["outputSizes"].is_array()){
+            for(auto& x: task["outputSizes"]) if(x.is_number_unsigned()) outputSizes.push_back(x.get<size_t>());
+        }
+
+        std::vector<int> grid = task.value("grid", std::vector<int>{});
+        std::vector<int> block = task.value("block", std::vector<int>{});
+
+        // If grid/block are missing, try to derive from global dimensions
+        if (grid.empty() || block.empty()) {
+            if (task.contains("global")) {
+                if (task["global"].is_array()) {
+                    // Global is an array - use it as grid and set reasonable block default
+                    grid = task["global"].get<std::vector<int>>();
+                    if (block.empty()) block = {16, 16, 1};
+                } else if (task["global"].is_number_integer()) {
+                    // Global is a scalar - derive 1D grid
+                    const auto G = task["global"].get<long long>();
+                    const int TPB = 256;
+                    grid = { int(std::max<long long>(1, (G + TPB - 1)/TPB)), 1, 1 };
+                    block = { TPB, 1, 1 };
+                }
+            }
+            // Set defaults if still empty
+            if (grid.empty()) grid = {1, 1, 1};
+            if (block.empty()) block = {16, 16, 1};
+        }
+
+        std::cout << "[CUDA] Derived launch parameters:" << std::endl;
+        std::cout << "[CUDA]   Grid: [" << (grid.size() > 0 ? std::to_string(grid[0]) : "1")
+                  << ", " << (grid.size() > 1 ? std::to_string(grid[1]) : "1")
+                  << ", " << (grid.size() > 2 ? std::to_string(grid[2]) : "1") << "]" << std::endl;
+        std::cout << "[CUDA]   Block: [" << (block.size() > 0 ? std::to_string(block[0]) : "1")
+                  << ", " << (block.size() > 1 ? std::to_string(block[1]) : "1")
+                  << ", " << (block.size() > 2 ? std::to_string(block[2]) : "1") << "]" << std::endl;
+
+        // Use cached kernel if available
+        auto cached_kernel = get_or_compile_kernel(src, entry);
+        if(!cached_kernel){
+            r.error="CUDA kernel compilation failed";
+            return r;
+        }
+
+        std::vector<std::vector<uint8_t>> outputs;
+        if(!launch(cached_kernel->kernel.ptx, entry, uniforms, inputs, outputSizes, grid, block, outputs)){
+            r.error="CUDA kernel launch failed";
+            return r;
+        }
+
+        auto t1 = std::chrono::high_resolution_clock::now();
+        // set kernel GPU time in ms; wall time is still t1-t0 if you need it for logs
+        r.ms = g_cuda_kernel_ms;
+        r.ok = true;
+        r.outputs = std::move(outputs);
+        return r;
+    } catch (const std::runtime_error& e) {
+        std::cerr << "[CUDA] Runtime error in run_task: " << e.what() << std::endl;
+        r.error = std::string("CUDA runtime error: ") + e.what();
+        return r;
+    } catch (const std::exception& e) {
+        std::cerr << "[CUDA] Standard exception in run_task: " << e.what() << std::endl;
+        std::cerr << "[CUDA] Exception type: " << typeid(e).name() << std::endl;
+        r.error = std::string("CUDA standard exception: ") + e.what();
+        return r;
+    } catch (...) {
+        std::cerr << "[CUDA] Unknown exception in run_task" << std::endl;
+        r.error = "CUDA unknown exception";
         return r;
     }
-
-    std::vector<std::vector<uint8_t>> outputs;
-    if(!launch(cached_kernel->kernel.ptx, entry, uniforms, inputs, outputSizes, grid, block, outputs)){
-        r.error="launch failed";
-        return r;
-    }
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    // set kernel GPU time in ms; wall time is still t1-t0 if you need it for logs
-    r.ms = g_cuda_kernel_ms;
-    r.ok = true;
-    r.outputs = std::move(outputs);
-    return r;
 }
 
 CudaExecutor::~CudaExecutor(){
