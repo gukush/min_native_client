@@ -82,18 +82,19 @@ if(ENABLE_CUDA)
             # Find CUDA libraries manually
             find_library(CUDA_DRIVER_LIBRARY NAMES cuda PATHS ${CUDA_SEARCH_PATHS})
             find_library(CUDA_NVRTC_LIBRARY NAMES nvrtc PATHS ${CUDA_SEARCH_PATHS})
+            find_library(CUDA_RUNTIME_LIBRARY NAMES cudart PATHS ${CUDA_SEARCH_PATHS})
 
-            if(CUDA_DRIVER_LIBRARY AND CUDA_NVRTC_LIBRARY)
-                target_link_libraries(native_client PRIVATE ${CUDA_DRIVER_LIBRARY} ${CUDA_NVRTC_LIBRARY})
+            if(CUDA_DRIVER_LIBRARY AND CUDA_NVRTC_LIBRARY AND CUDA_RUNTIME_LIBRARY)
+                target_link_libraries(native_client PRIVATE ${CUDA_DRIVER_LIBRARY} ${CUDA_NVRTC_LIBRARY} ${CUDA_RUNTIME_LIBRARY})
                 # Add CUDA include directories
-                target_include_directories(native_client PRIVATE 
+                target_include_directories(native_client PRIVATE
                     ${CUDAToolkit_INCLUDE_DIRS}
                     /usr/local/cuda-13.0/include
                     /usr/local/cuda-11.8/include
                     /usr/local/cuda/include
                 )
                 target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
-                message(STATUS "CUDA: Using manual library detection (${CUDA_DRIVER_LIBRARY}, ${CUDA_NVRTC_LIBRARY})")
+                message(STATUS "CUDA: Using manual library detection (${CUDA_DRIVER_LIBRARY}, ${CUDA_NVRTC_LIBRARY}, ${CUDA_RUNTIME_LIBRARY})")
             else()
                 message(WARNING "CUDA libraries not found, CUDA support disabled")
                 message(STATUS "CUDA: Searched paths: ${CUDA_SEARCH_PATHS}")
