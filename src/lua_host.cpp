@@ -42,7 +42,6 @@ LuaHost::json LuaHost::compile_and_run(const json& chunk) {
     sol::function f = L_["compile_and_run"];
     if (!f.valid()) throw std::runtime_error("compile_and_run not found");
 
-    // For the basic version, don't set workload framework/config
     // Only make artifacts available if they exist
     if (!artifacts_.is_null()) {
         L_["artifacts"] = to_lua(L_, artifacts_);
@@ -58,7 +57,7 @@ LuaHost::json LuaHost::compile_and_run(const json& chunk) {
     return to_json(out);
 }
 
-// overload with workload data
+// Method 2: Enhanced version with workload parameters
 LuaHost::json LuaHost::compile_and_run(const json& chunk, const std::string& workload_framework, const json& workload_config) {
     sol::function f = L_["compile_and_run"];
     if (!f.valid()) throw std::runtime_error("compile_and_run not found");
@@ -71,24 +70,6 @@ LuaHost::json LuaHost::compile_and_run(const json& chunk, const std::string& wor
     if (!artifacts_.is_null()) {
         L_["artifacts"] = to_lua(L_, artifacts_);
     }
-
-    sol::object arg = to_lua(L_, chunk);
-    sol::protected_function_result r = f(arg);
-    if (!r.valid()) {
-        sol::error err = r;
-        throw std::runtime_error(std::string("lua runtime error: ") + err.what());
-    }
-    sol::object out = r;
-    return to_json(out);
-}
-
-LuaHost::json LuaHost::compile_and_run(const json& chunk, const std::string& workload_framework, const json& workload_config) {
-    sol::function f = L_["compile_and_run"];
-    if (!f.valid()) throw std::runtime_error("compile_and_run not found");
-
-    // Make workload framework and config available to Lua script
-    L_["workload_framework"] = workload_framework;
-    L_["workload_config"] = to_lua(L_, workload_config);
 
     sol::object arg = to_lua(L_, chunk);
     sol::protected_function_result r = f(arg);
