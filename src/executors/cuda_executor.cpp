@@ -334,7 +334,39 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
 
 ExecResult CudaExecutor::run_task(const json& task){
     ExecResult r;
-    std::cout << "[CUDA] Task JSON: " << task.dump(2) << std::endl;
+
+    // Use the debug utilities from kernel_cache.hpp
+    std::cout << "[CUDA] Task summary: " << json_summary(task) << std::endl;
+    std::cout << "[CUDA] Task keys: ";
+    for (auto& [key, value] : task.items()) {
+        std::cout << key << " ";
+    }
+    std::cout << std::endl;
+
+    // Show truncated structure for detailed debugging
+    if (task.size() > 0) {
+        auto truncated = truncate_json_for_debug(task, 100, 2);  // 100 chars max, 2 levels deep
+        std::cout << "[CUDA] Task structure (truncated): " << truncated.dump(2) << std::endl;
+    }
+
+    // Check for workload schema information
+    if (task.contains("workload")) {
+        std::cout << "[CUDA] Workload found in task" << std::endl;
+        auto workload = task["workload"];
+        if (workload.contains("schema")) {
+            std::cout << "[CUDA] Schema found in workload: " << workload["schema"].dump(2) << std::endl;
+        } else {
+            std::cout << "[CUDA] No schema in workload" << std::endl;
+            std::cout << "[CUDA] Workload keys: ";
+            for (auto& [key, value] : workload.items()) {
+                std::cout << key << " ";
+            }
+            std::cout << std::endl;
+        }
+    } else {
+        std::cout << "[CUDA] No workload in task" << std::endl;
+    }
+
     auto t0 = std::chrono::high_resolution_clock::now();
 
     try {
@@ -349,17 +381,45 @@ ExecResult CudaExecutor::run_task(const json& task){
                 else if(v.is_number_float()){ double d=v.get<double>(); uint64_t u; std::memcpy(&u,&d,sizeof(double)); uniforms.push_back(u); }
             }
         }
+        std::cout << "[CUDA] Parsed " << uniforms.size() << " uniform values" << std::endl;
 
+        // Improved input processing with better size reporting
         std::vector<std::vector<uint8_t>> inputs;
+        size_t total_input_bytes = 0;
+
         if(task.contains("inputs") && task["inputs"].is_array()){
-            for(auto& it: task["inputs"]){
+            std::cout << "[CUDA] Processing " << task["inputs"].size() << " input buffer(s):" << std::endl;
+
+            for(size_t idx = 0; idx < task["inputs"].size(); ++idx){
+                auto& it = task["inputs"][idx];
                 std::string b64 = it.value("b64", it.value("data", ""));
+
+                // Show base64 size info
+                std::cout << "[CUDA]   Input " << idx << ": base64 string " << b64.length() << " chars";
+
+                // Decode and show actual size
                 extern std::vector<uint8_t> base64_decode(const std::string& s);
-                std::cout << "[CUDA] Decoding base64 input with length: " << b64.length() << " chars" << std::endl;
                 auto decoded = base64_decode(b64);
-                std::cout << "[CUDA] Decoded input size: " << decoded.size() << " bytes" << std::endl;
-                inputs.push_back(decoded);
+                std::cout << " -> " << decoded.size() << " bytes";
+
+                // Show first few bytes as hex for verification
+                if (!decoded.empty()) {
+                    std::cout << " (first 8 bytes: ";
+                    for (size_t i = 0; i < std::min(size_t(8), decoded.size()); ++i) {
+                        printf("%02x", decoded[i]);
+                    }
+                    std::cout << ")";
+                }
+                std::cout << std::endl;
+
+                total_input_bytes += decoded.size();
+                inputs.push_back(std::move(decoded));
             }
+
+            std::cout << "[CUDA] Total input data: " << total_input_bytes << " bytes ("
+                      << (total_input_bytes / 1024.0 / 1024.0) << " MB)" << std::endl;
+        } else {
+            std::cout << "[CUDA] No inputs found in task" << std::endl;
         }
 
         std::vector<size_t> outputSizes;
@@ -374,40 +434,39 @@ ExecResult CudaExecutor::run_task(const json& task){
                 }
             }
         }
-        std::cout << "[CUDA] Parsed outputSizes: ";
+
+        // Better output size reporting
+        std::cout << "[CUDA] Output buffers (" << outputSizes.size() << "): ";
+        size_t total_output_bytes = 0;
         for(size_t i = 0; i < outputSizes.size(); ++i) {
-            std::cout << outputSizes[i] << " ";
+            if (i > 0) std::cout << ", ";
+            std::cout << "[" << i << "]=" << outputSizes[i] << "B";
+            total_output_bytes += outputSizes[i];
         }
-        std::cout << "(" << outputSizes.size() << " outputs)" << std::endl;
+        if (!outputSizes.empty()) {
+            std::cout << " (total: " << total_output_bytes << " bytes, "
+                      << (total_output_bytes / 1024.0 / 1024.0) << " MB)";
+        }
+        std::cout << std::endl;
 
         std::vector<int> grid = task.value("grid", std::vector<int>{});
         std::vector<int> block = task.value("block", std::vector<int>{});
 
-        std::cout << "[CUDA] Raw task values - grid size: " << grid.size() << ", block size: " << block.size() << std::endl;
-        if (grid.size() > 0) {
-            std::cout << "[CUDA] Raw grid: [" << grid[0];
-            for (size_t i = 1; i < grid.size(); ++i) std::cout << ", " << grid[i];
-            std::cout << "]" << std::endl;
-        }
-        if (block.size() > 0) {
-            std::cout << "[CUDA] Raw block: [" << block[0];
-            for (size_t i = 1; i < block.size(); ++i) std::cout << ", " << block[i];
-            std::cout << "]" << std::endl;
-        }
+        std::cout << "[CUDA] Launch config - grid: " << grid.size() << " dims, block: " << block.size() << " dims" << std::endl;
 
         // If grid/block are missing, try to derive from global dimensions
         if (grid.empty() || block.empty()) {
             if (task.contains("global")) {
                 if (task["global"].is_array()) {
-                    // Global is an array - use it as grid and set reasonable block default
                     grid = task["global"].get<std::vector<int>>();
                     if (block.empty()) block = {16, 16, 1};
+                    std::cout << "[CUDA] Derived grid from global array" << std::endl;
                 } else if (task["global"].is_number_integer()) {
-                    // Global is a scalar - derive 1D grid
                     const auto G = task["global"].get<long long>();
                     const int TPB = 256;
                     grid = { int(std::max<long long>(1, (G + TPB - 1)/TPB)), 1, 1 };
                     block = { TPB, 1, 1 };
+                    std::cout << "[CUDA] Derived 1D grid from global=" << G << std::endl;
                 }
             }
             // Set defaults if still empty
@@ -415,57 +474,55 @@ ExecResult CudaExecutor::run_task(const json& task){
             if (block.empty()) block = {16, 16, 1};
         }
 
-        std::cout << "[CUDA] Derived launch parameters:" << std::endl;
-        std::cout << "[CUDA]   Grid: [" << (grid.size() > 0 ? std::to_string(grid[0]) : "1")
-                  << ", " << (grid.size() > 1 ? std::to_string(grid[1]) : "1")
-                  << ", " << (grid.size() > 2 ? std::to_string(grid[2]) : "1") << "]" << std::endl;
-        std::cout << "[CUDA]   Block: [" << (block.size() > 0 ? std::to_string(block[0]) : "1")
-                  << ", " << (block.size() > 1 ? std::to_string(block[1]) : "1")
-                  << ", " << (block.size() > 2 ? std::to_string(block[2]) : "1") << "]" << std::endl;
+        // Concise launch parameters display
+        auto format_dims = [](const std::vector<int>& dims) {
+            return "[" + std::to_string(dims.size() > 0 ? dims[0] : 1) +
+                   "," + std::to_string(dims.size() > 1 ? dims[1] : 1) +
+                   "," + std::to_string(dims.size() > 2 ? dims[2] : 1) + "]";
+        };
+
+        int total_threads = (grid.size() > 0 ? grid[0] : 1) * (grid.size() > 1 ? grid[1] : 1) * (grid.size() > 2 ? grid[2] : 1) *
+                           (block.size() > 0 ? block[0] : 1) * (block.size() > 1 ? block[1] : 1) * (block.size() > 2 ? block[2] : 1);
+
+        std::cout << "[CUDA] Launch: Grid" << format_dims(grid) << " × Block" << format_dims(block)
+                  << " = " << total_threads << " threads" << std::endl;
 
         // Parse schema to check for in-place flags on inputs
-        // Check both workload-level schema and task-level meta schema
         std::vector<bool> inputInPlace(inputs.size(), false);
+        bool found_schema = false;
 
-        // First try workload-level schema
         if (task.contains("workload") && task["workload"].is_object()) {
             auto workload = task["workload"];
             if (workload.contains("schema") && workload["schema"].is_object()) {
                 auto schema = workload["schema"];
                 if (schema.contains("inputs") && schema["inputs"].is_array()) {
                     auto inputs_schema = schema["inputs"];
+                    found_schema = true;
+                    std::cout << "[CUDA] Schema processing: found " << inputs_schema.size() << " input schema(s)" << std::endl;
+
                     for (size_t i = 0; i < inputs_schema.size() && i < inputs.size(); ++i) {
                         if (inputs_schema[i].contains("inPlace") && inputs_schema[i]["inPlace"].is_boolean()) {
                             inputInPlace[i] = inputs_schema[i]["inPlace"].get<bool>();
-                            if (inputInPlace[i]) {
-                                std::cout << "[CUDA] Input " << i << " marked as in-place in workload schema" << std::endl;
-                            }
+                            std::cout << "[CUDA]   Input " << i << ": inPlace=" << (inputInPlace[i] ? "true" : "false") << std::endl;
                         }
                     }
                 }
             }
         }
 
-        // Fallback to task-level meta schema if workload schema not found
-        if (!std::any_of(inputInPlace.begin(), inputInPlace.end(), [](bool x) { return x; })) {
-            if (task.contains("meta") && task["meta"].is_object()) {
-                auto meta = task["meta"];
-                if (meta.contains("schema") && meta["schema"].is_object()) {
-                    auto schema = meta["schema"];
-                    if (schema.contains("inputs") && schema["inputs"].is_array()) {
-                        auto inputs_schema = schema["inputs"];
-                        for (size_t i = 0; i < inputs_schema.size() && i < inputs.size(); ++i) {
-                            if (inputs_schema[i].contains("inPlace") && inputs_schema[i]["inPlace"].is_boolean()) {
-                                inputInPlace[i] = inputs_schema[i]["inPlace"].get<bool>();
-                                if (inputInPlace[i]) {
-                                    std::cout << "[CUDA] Input " << i << " marked as in-place in task meta schema" << std::endl;
-                                }
-                            }
-                        }
-                    }
-                }
+        if (!found_schema) {
+            std::cout << "[CUDA] No schema found - using separate input/output buffers" << std::endl;
+        }
+
+        // Show final in-place configuration
+        bool has_inplace = false;
+        for (size_t i = 0; i < inputInPlace.size(); ++i) {
+            if (inputInPlace[i]) {
+                has_inplace = true;
+                break;
             }
         }
+        std::cout << "[CUDA] Buffer mode: " << (has_inplace ? "in-place" : "separate") << " processing" << std::endl;
 
         // Use cached kernel if available
         auto cached_kernel = get_or_compile_kernel(src, entry);
@@ -480,12 +537,29 @@ ExecResult CudaExecutor::run_task(const json& task){
             return r;
         }
 
+        // Report output results
+        std::cout << "[CUDA] Execution completed, " << outputs.size() << " output buffer(s) returned" << std::endl;
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            std::cout << "[CUDA]   Output " << i << ": " << outputs[i].size() << " bytes";
+            if (!outputs[i].empty()) {
+                // Show first few bytes for verification
+                std::cout << " (first 8 bytes: ";
+                for (size_t j = 0; j < std::min(size_t(8), outputs[i].size()); ++j) {
+                    printf("%02x", outputs[i][j]);
+                }
+                std::cout << ")";
+            }
+            std::cout << std::endl;
+        }
+
         auto t1 = std::chrono::high_resolution_clock::now();
-        // set kernel GPU time in ms; wall time is still t1-t0 if you need it for logs
-        r.ms = g_cuda_kernel_ms;
+        r.ms = g_cuda_kernel_ms;  // GPU time from timing events
         r.ok = true;
         r.outputs = std::move(outputs);
+
+        std::cout << "[CUDA] Task completed successfully in " << r.ms << " ms GPU time" << std::endl;
         return r;
+
     } catch (const std::runtime_error& e) {
         std::cerr << "[CUDA] Runtime error in run_task: " << e.what() << std::endl;
         r.error = std::string("CUDA runtime error: ") + e.what();

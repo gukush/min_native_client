@@ -41,6 +41,12 @@ bool LuaHost::has_compile_and_run() const {
 LuaHost::json LuaHost::compile_and_run(const json& chunk) {
     sol::function f = L_["compile_and_run"];
     if (!f.valid()) throw std::runtime_error("compile_and_run not found");
+    // Make workload framework and config available to Lua script
+    L_["workload_framework"] = workload_framework;
+    L_["workload_config"] = to_lua(L_, workload_config);
+    if (!artifacts_.is_null()) {
+        L_["artifacts"] = to_lua(L_, artifacts_);
+    }
 
     sol::object arg = to_lua(L_, chunk);
     sol::protected_function_result r = f(arg);

@@ -371,7 +371,12 @@ IExecutor* OrchestratorClient::get_executor(const std::string& name) {
 json OrchestratorClient::run_executor(const std::string& name, const json& task) {
     auto* exe = get_executor(name);
     if (!exe) throw std::runtime_error("Executor not available: " + name);
+    json enhanced_task = task;
 
+    if (!current_workload_.is_null() && !enhanced_task.contains("workload")) {
+        enhanced_task["workload"] = current_workload_;
+        std::cout << "[client] Added workload schema information to " << name << " executor task" << std::endl;
+    }
     ExecResult result;
     try {
         result = exe->run_task(task);
