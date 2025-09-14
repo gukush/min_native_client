@@ -84,7 +84,7 @@ private:
 
 
 // Helper function to create a truncated/summarized version of JSON for debugging
-nlohmann::json truncate_json_for_debug(const nlohmann::json& j, size_t max_string_length = 100, int max_depth = 3, int current_depth = 0) {
+inline nlohmann::json truncate_json_for_debug(const nlohmann::json& j, size_t max_string_length = 100, int max_depth = 3, int current_depth = 0) {
     if (current_depth >= max_depth) {
         return "[MAX_DEPTH_REACHED]";
     }
@@ -129,7 +129,7 @@ nlohmann::json truncate_json_for_debug(const nlohmann::json& j, size_t max_strin
     return j;
 }
 
-std::string json_summary(const nlohmann::json& j) {
+inline std::string json_summary(const nlohmann::json& j) {
         std::ostringstream ss;
 
         if (j.is_object()) {
