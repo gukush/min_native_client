@@ -19,8 +19,8 @@ public:
 private:
 #ifdef HAVE_VULKAN
     struct VulkanKernel {
-        VkShaderModule module;
         std::vector<uint32_t> spirv;
+        std::string buildLog;
     };
 
     // Static kernel cache
@@ -49,8 +49,8 @@ private:
     bool submit_and_wait(VkCommandBuffer cmd);
 
     std::shared_ptr<KernelCache<VulkanKernel>::CachedKernel>
-        get_or_build_shader(const std::string& glsl, const std::string& spirv_b64);
-    bool build_pipeline_from_glsl(const std::string& glsl, const std::string& entry, VkShaderModule& module, std::vector<uint32_t>& spirv);
-    bool build_pipeline_from_spirv(const std::vector<uint32_t>& spirv, VkShaderModule& module);
+        get_or_compile_shader(const std::string& glsl_source, const std::string& spirv_b64);
+    bool compile_glsl_to_spirv(const std::string& glsl, std::vector<uint32_t>& spirv, std::string& buildLog);
+    std::vector<uint32_t> decode_spirv_b64(const std::string& spirv_b64);
 #endif
 };
