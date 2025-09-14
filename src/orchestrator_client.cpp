@@ -379,7 +379,7 @@ json OrchestratorClient::run_executor(const std::string& name, const json& task)
     }
     ExecResult result;
     try {
-        result = exe->run_task(task);
+        result = exe->run_task(enhanced_task);
     } catch (const std::runtime_error& e) {
         std::cerr << "[client] " << name << " executor runtime error: " << e.what() << std::endl;
         std::cerr << "[client] Exception type: std::runtime_error" << std::endl;
