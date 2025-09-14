@@ -118,7 +118,7 @@ void OrchestratorClient::register_with_server() {
     // Send client:join message to register with the server
     json capabilities = {
         {"frameworks", {"opencl", "vulkan", "cuda", "exe"}},
-        {"strategies", {"native-block-matmul", "native-block-matmul-flex","exe-block-matmul-flex","native-ecm-stage1","native-distributed-sort"}},
+        {"strategies", {"native-block-matmul", "native-block-matmul-flex","exe-block-matmul-flex","native-ecm-stage1","native-distributed-sort","native-multi-head-attention"}},
         {"capacity", max_concurrency_},
         {"clientType", "native"}
     };
