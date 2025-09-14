@@ -161,5 +161,4 @@ std::string json_summary(const nlohmann::json& j) {
         }
 
         return ss.str();
-    }
 }
