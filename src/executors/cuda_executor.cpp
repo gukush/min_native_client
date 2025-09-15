@@ -208,6 +208,9 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     cudaEventSynchronize(evH2D1);
     { float ms=0.0f; cudaEventElapsedTime(&ms, evH2D0, evH2D1); g_cuda_h2d_ms = (double)ms; }
 
+    // Check if this is ECM Stage1 kernel (unified buffer)
+    bool is_ecm_stage1 = (entry == "ecm_stage1_v3_optimized" || entry == "ecm_stage1_v3");
+
     std::vector<CUdeviceptr> dOut(outputSizes.size());
     for(size_t i=0;i<outputSizes.size();++i){
         if(outputSizes[i]==0){ dOut[i]=0; continue; }
@@ -245,8 +248,6 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     for(auto& d: dIn) args.push_back((void*)&d);
 
     // Special handling for ECM Stage1 kernel (unified buffer)
-    bool is_ecm_stage1 = (entry == "ecm_stage1_v3_optimized" || entry == "ecm_stage1_v3");
-
     if (is_ecm_stage1 && dIn.size() == 1 && dOut.size() == 1 && dIn[0] != 0 && dOut[0] != 0) {
         // ECM Stage1 expects unified buffer - pass only input buffer, don't pass output buffer
         std::cout << "[CUDA] ECM Stage1 detected: using unified buffer (input only)" << std::endl;
