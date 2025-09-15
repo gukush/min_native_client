@@ -632,9 +632,9 @@ ExecResult CudaExecutor::create_gpu_buffer(const json& task) {
 
         // Store buffer info
         gpuBuffers_[bufferId] = {d_ptr, bufferSize, bufferId, true};
-
+        
         pop_ctx();
-        return ExecResult{true, {{"bufferId", bufferId}}, 0.0, "GPU buffer created"};
+        return ExecResult{true, {}, 0.0, "GPU buffer created"};
 
     } catch (const std::exception& e) {
         pop_ctx();
@@ -754,8 +754,8 @@ ExecResult CudaExecutor::run_kernel_on_gpu_buffer(const json& task) {
 
         cuModuleUnload(mod);
         pop_ctx();
-
-        return ExecResult{true, {{"bufferId", bufferId}}, 0.0, "Kernel executed successfully"};
+        
+        return ExecResult{true, {}, 0.0, "Kernel executed successfully"};
 
     } catch (const std::exception& e) {
         pop_ctx();
