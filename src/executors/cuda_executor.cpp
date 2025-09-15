@@ -220,7 +220,10 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
             pop_ctx();
             return false;
         }
-        check(cuMemsetD8(dOut[i], 0, outputSizes[i]), "cuMemsetD8(out)");
+        // Only zero out output buffer if not using unified buffer (ECM Stage1)
+        if (!is_ecm_stage1) {
+            check(cuMemsetD8(dOut[i], 0, outputSizes[i]), "cuMemsetD8(out)");
+        }
     }
 
     // Check if any inputs are marked as in-place
@@ -241,16 +244,25 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
     for(auto& u: uniforms) args.push_back((void*)&u);
     for(auto& d: dIn) args.push_back((void*)&d);
 
-    // Handle outputs based on in-place flags
-    for(size_t i = 0; i < dOut.size(); ++i) {
-        if (dOut[i] == 0) continue; // Skip null output buffers
+    // Special handling for ECM Stage1 kernel (unified buffer)
+    bool is_ecm_stage1 = (entry == "ecm_stage1_v3_optimized" || entry == "ecm_stage1_v3");
 
-        // If this output corresponds to an in-place input, use the input buffer
-        if (i < inputInPlace.size() && inputInPlace[i] && i < dIn.size()) {
-            args.push_back((void*)&dIn[i]); // Use input buffer as output
-            std::cout << "[CUDA] Output " << i << " in-place: using input buffer as output buffer" << std::endl;
-        } else {
-            args.push_back((void*)&dOut[i]); // Use separate output buffer
+    if (is_ecm_stage1 && dIn.size() == 1 && dOut.size() == 1 && dIn[0] != 0 && dOut[0] != 0) {
+        // ECM Stage1 expects unified buffer - pass only input buffer, don't pass output buffer
+        std::cout << "[CUDA] ECM Stage1 detected: using unified buffer (input only)" << std::endl;
+        args.push_back((void*)&dIn[0]); // Only pass input buffer
+    } else {
+        // Handle outputs based on in-place flags
+        for(size_t i = 0; i < dOut.size(); ++i) {
+            if (dOut[i] == 0) continue; // Skip null output buffers
+
+            // If this output corresponds to an in-place input, use the input buffer
+            if (i < inputInPlace.size() && inputInPlace[i] && i < dIn.size()) {
+                args.push_back((void*)&dIn[i]); // Use input buffer as output
+                std::cout << "[CUDA] Output " << i << " in-place: using input buffer as output buffer" << std::endl;
+            } else {
+                args.push_back((void*)&dOut[i]); // Use separate output buffer
+            }
         }
     }
 
@@ -302,8 +314,13 @@ bool CudaExecutor::launch(const std::string& ptx, const std::string& entry,
         outputs[i].resize(outputSizes[i]);
         CUdeviceptr src = dOut[i];
 
+        // Special handling for ECM Stage1 kernel (unified buffer)
+        if (is_ecm_stage1 && i == 0 && dIn.size() > 0) {
+            src = dIn[0]; // Read from input buffer for ECM Stage1
+            std::cout << "[CUDA] ECM Stage1: reading result from input buffer" << std::endl;
+        }
         // For in-place inputs, read from input buffer instead of output buffer
-        if (i < inputInPlace.size() && inputInPlace[i] && i < dIn.size()) {
+        else if (i < inputInPlace.size() && inputInPlace[i] && i < dIn.size()) {
             src = dIn[i];
             std::cout << "[CUDA] Output " << i << " in-place: reading result from input buffer" << std::endl;
         }
@@ -632,7 +649,7 @@ ExecResult CudaExecutor::create_gpu_buffer(const json& task) {
 
         // Store buffer info
         gpuBuffers_[bufferId] = {d_ptr, bufferSize, bufferId, true};
-        
+
         pop_ctx();
         return ExecResult{true, {}, 0.0, "GPU buffer created"};
 
@@ -754,7 +771,7 @@ ExecResult CudaExecutor::run_kernel_on_gpu_buffer(const json& task) {
 
         cuModuleUnload(mod);
         pop_ctx();
-        
+
         return ExecResult{true, {}, 0.0, "Kernel executed successfully"};
 
     } catch (const std::exception& e) {
