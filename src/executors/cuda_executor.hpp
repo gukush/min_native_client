@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <map>
 
 class CudaExecutor : public IExecutor {
 public:
@@ -16,6 +17,12 @@ public:
     bool initialize(const json& cfg) override;
     ExecResult run_task(const json& task) override;
     ~CudaExecutor();
+
+    // Enhanced methods for efficient batch processing
+    ExecResult run_batch_task(const json& task);
+    ExecResult create_gpu_buffer(const json& task);
+    ExecResult destroy_gpu_buffer(const json& task);
+    ExecResult run_kernel_on_gpu_buffer(const json& task);
 
 private:
 #ifdef HAVE_CUDA
@@ -40,6 +47,19 @@ private:
                 const std::vector<bool>& inputInPlace);
     bool check(CUresult res, const char* what);
     bool checkNVRTC(nvrtcResult res, const char* what);
+
+    // GPU buffer management for efficient processing
+    struct GPUBuffer {
+        CUdeviceptr ptr;
+        size_t size;
+        std::string bufferId;
+        bool inUse;
+    };
+    std::map<std::string, GPUBuffer> gpuBuffers_;
+
+    // Private helper methods
+    ExecResult run_bitonic_sort_batch(const json& task);
+
     CUdevice device_ = 0;
     CUcontext ctx=nullptr;
 #endif

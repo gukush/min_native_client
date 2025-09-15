@@ -589,6 +589,188 @@ CudaExecutor::~CudaExecutor(){
         ctx = nullptr;
     }
 }
+
+// Enhanced methods for efficient batch processing
+ExecResult CudaExecutor::run_batch_task(const json& task) {
+    std::cout << "[CUDA-ENHANCED] Running batch task" << std::endl;
+
+    // Check if this is a batch bitonic sort task
+    if (task.contains("batchType") && task["batchType"] == "bitonic_sort") {
+        return run_bitonic_sort_batch(task);
+    }
+
+    // Fall back to regular task processing for other tasks
+    return run_task(task);
+}
+
+ExecResult CudaExecutor::create_gpu_buffer(const json& task) {
+    std::cout << "[CUDA-ENHANCED] Creating GPU buffer" << std::endl;
+
+    if (!ensureDriver()) {
+        return ExecResult{false, {}, 0.0, "CUDA driver not available"};
+    }
+
+    CUcontext pushed = nullptr;
+    if (!check(cuCtxPushCurrent(ctx), "cuCtxPushCurrent")) {
+        return ExecResult{false, {}, 0.0, "Failed to push CUDA context"};
+    }
+
+    auto pop_ctx = [&]() {
+        CUcontext dummy = nullptr;
+        cuCtxPopCurrent(&dummy);
+    };
+
+    try {
+        std::string bufferId = task["bufferId"];
+        size_t bufferSize = task["size"];
+
+        CUdeviceptr d_ptr;
+        if (!check(cuMemAlloc(&d_ptr, bufferSize), "cuMemAlloc")) {
+            pop_ctx();
+            return ExecResult{false, {}, 0.0, "Failed to allocate GPU memory"};
+        }
+
+        // Store buffer info
+        gpuBuffers_[bufferId] = {d_ptr, bufferSize, bufferId, true};
+
+        pop_ctx();
+        return ExecResult{true, {{"bufferId", bufferId}}, 0.0, "GPU buffer created"};
+
+    } catch (const std::exception& e) {
+        pop_ctx();
+        return ExecResult{false, {}, 0.0, std::string("Error creating GPU buffer: ") + e.what()};
+    }
+}
+
+ExecResult CudaExecutor::destroy_gpu_buffer(const json& task) {
+    std::cout << "[CUDA-ENHANCED] Destroying GPU buffer" << std::endl;
+
+    try {
+        std::string bufferId = task["bufferId"];
+
+        auto it = gpuBuffers_.find(bufferId);
+        if (it != gpuBuffers_.end()) {
+            cuMemFree(it->second.ptr);
+            gpuBuffers_.erase(it);
+            return ExecResult{true, {}, 0.0, "GPU buffer destroyed"};
+        } else {
+            return ExecResult{false, {}, 0.0, "Buffer not found"};
+        }
+    } catch (const std::exception& e) {
+        return ExecResult{false, {}, 0.0, std::string("Error destroying GPU buffer: ") + e.what()};
+    }
+}
+
+ExecResult CudaExecutor::run_kernel_on_gpu_buffer(const json& task) {
+    std::cout << "[CUDA-ENHANCED] Running kernel on GPU buffer" << std::endl;
+
+    if (!ensureDriver()) {
+        return ExecResult{false, {}, 0.0, "CUDA driver not available"};
+    }
+
+    CUcontext pushed = nullptr;
+    if (!check(cuCtxPushCurrent(ctx), "cuCtxPushCurrent")) {
+        return ExecResult{false, {}, 0.0, "Failed to push CUDA context"};
+    }
+
+    auto pop_ctx = [&]() {
+        CUcontext dummy = nullptr;
+        cuCtxPopCurrent(&dummy);
+    };
+
+    try {
+        std::string bufferId = task["bufferId"];
+        std::string source = task["source"];
+        std::string entry = task["entry"];
+        std::vector<uint64_t> uniforms = task["uniforms"];
+        std::vector<int> grid = task["grid"];
+        std::vector<int> block = task["block"];
+
+        auto it = gpuBuffers_.find(bufferId);
+        if (it == gpuBuffers_.end()) {
+            pop_ctx();
+            return ExecResult{false, {}, 0.0, "GPU buffer not found"};
+        }
+
+        // Get or compile kernel
+        auto kernel = get_or_compile_kernel(source, entry);
+        if (!kernel) {
+            pop_ctx();
+            return ExecResult{false, {}, 0.0, "Failed to compile kernel"};
+        }
+
+        // Launch kernel directly on GPU buffer
+        CUmodule mod = nullptr;
+        CUfunction fun = nullptr;
+
+        // JIT options for driver
+        CUjit_option options[6];
+        void* optionVals[6];
+        char error_log[8192]; error_log[0] = 0;
+        char info_log[8192]; info_log[0] = 0;
+        unsigned int logSize = sizeof(error_log), infoSize = sizeof(info_log);
+
+        options[0] = CU_JIT_ERROR_LOG_BUFFER; optionVals[0] = error_log;
+        options[1] = CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES; optionVals[1] = (void*)(uintptr_t)logSize;
+        options[2] = CU_JIT_INFO_LOG_BUFFER; optionVals[2] = info_log;
+        options[3] = CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES; optionVals[3] = (void*)(uintptr_t)infoSize;
+        options[4] = CU_JIT_LOG_VERBOSE; optionVals[4] = (void*)1;
+        options[5] = CU_JIT_FALLBACK_STRATEGY; optionVals[5] = (void*)CU_PREFER_PTX;
+
+        if (!check(cuModuleLoadDataEx(&mod, kernel->kernel.ptx.c_str(), 6, options, optionVals), "cuModuleLoadDataEx")) {
+            if (error_log[0]) std::cerr << "[JIT error] " << error_log << std::endl;
+            if (info_log[0]) std::cerr << "[JIT info] " << info_log << std::endl;
+            pop_ctx();
+            return ExecResult{false, {}, 0.0, "Failed to load module"};
+        }
+
+        if (!check(cuModuleGetFunction(&fun, mod, entry.c_str()), "cuModuleGetFunction")) {
+            cuModuleUnload(mod);
+            pop_ctx();
+            return ExecResult{false, {}, 0.0, "Failed to get function"};
+        }
+
+        // Build arguments: uniforms..., gpu_buffer
+        std::vector<void*> args;
+        args.reserve(uniforms.size() + 1);
+        for (auto& u : uniforms) args.push_back((void*)&u);
+        args.push_back((void*)&it->second.ptr);
+
+        dim3 g(grid.size() > 0 ? grid[0] : 1, grid.size() > 1 ? grid[1] : 1, grid.size() > 2 ? grid[2] : 1);
+        dim3 b(block.size() > 0 ? block[0] : 1, block.size() > 1 ? block[1] : 1, block.size() > 2 ? block[2] : 1);
+
+        // Launch kernel
+        if (!check(cuLaunchKernel(fun, g.x, g.y, g.z, b.x, b.y, b.z, 0, 0, args.data(), nullptr), "cuLaunchKernel")) {
+            cuModuleUnload(mod);
+            pop_ctx();
+            return ExecResult{false, {}, 0.0, "Kernel launch failed"};
+        }
+
+        if (!check(cuCtxSynchronize(), "cuCtxSynchronize")) {
+            cuModuleUnload(mod);
+            pop_ctx();
+            return ExecResult{false, {}, 0.0, "Context synchronization failed"};
+        }
+
+        cuModuleUnload(mod);
+        pop_ctx();
+
+        return ExecResult{true, {{"bufferId", bufferId}}, 0.0, "Kernel executed successfully"};
+
+    } catch (const std::exception& e) {
+        pop_ctx();
+        return ExecResult{false, {}, 0.0, std::string("Error running kernel: ") + e.what()};
+    }
+}
+
+ExecResult CudaExecutor::run_bitonic_sort_batch(const json& task) {
+    std::cout << "[CUDA-ENHANCED] Running bitonic sort batch" << std::endl;
+
+    // This will be implemented to process multiple sort stages efficiently
+    // For now, fall back to regular processing
+    return run_task(task);
+}
+
 #else
 
 bool CudaExecutor::initialize(const json& cfg){ (void)cfg; return false; }
