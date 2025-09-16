@@ -80,6 +80,9 @@ bool WebSocketClient::connect(const std::string& host, const std::string& port, 
                     req.set(beast::http::field::user_agent, "MultiFramework-Native-Client/1.0");
                 }));
 
+            // Set message size limit to 6x the default (16MB * 6 = 96MB)
+            ssl_ws->read_message_max(96 * 1024 * 1024);
+
             // Connect to the native WebSocket endpoint
             ssl_ws->handshake(hostWithPort, target);
 
@@ -99,6 +102,9 @@ bool WebSocketClient::connect(const std::string& host, const std::string& port, 
                 [](websocket::request_type& req) {
                     req.set(beast::http::field::user_agent, "MultiFramework-Native-Client/1.0");
                 }));
+
+            // Set message size limit to 6x the default (16MB * 6 = 96MB)
+            plain_ws->read_message_max(96 * 1024 * 1024);
 
             // Connect to the native WebSocket endpoint
             plain_ws->handshake(host, target);
