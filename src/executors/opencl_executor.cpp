@@ -417,5 +417,5 @@ ExecResult OpenCLExecutor::run_task(const json& task) {
 
 bool OpenCLExecutor::initialize(const json& cfg) { (void)cfg; return false; }
 ExecResult OpenCLExecutor::run_task(const json& task) { (void)task; return ExecResult{false, {}, 0.0, "OpenCL disabled"}; }
-
+OpenCLExecutor::~OpenCLExecutor() {}
 #endif // HAVE_OPENCL
