@@ -62,7 +62,7 @@ if(ENABLE_CUDA)
 
     if(CUDAToolkit_FOUND)
         # Check if the required targets exist before linking
-        if(TARGET CUDA::cuda_driver AND TARGET CUDA::nvrtc)
+        if(TARGET CUDA::cuda_driver AND TARGET CUDA::nvrtc AND CUDA::cudart)
             target_link_libraries(native_client PRIVATE CUDA::cuda_driver CUDA::nvrtc)
             target_compile_definitions(native_client PRIVATE HAVE_CUDA=1)
             message(STATUS "CUDA: Using CUDAToolkit imported targets (CUDA::cuda_driver, CUDA::nvrtc)")
