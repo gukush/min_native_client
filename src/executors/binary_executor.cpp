@@ -272,8 +272,11 @@ void BinaryExecutor::handle_workload_artifacts(const json& workload) {
         return;
     }
 
-    // Create task directory
-    std::string task_dir = create_task_directory(task_id);
+    // Extract client ID from workload (sent once per task, not per chunk)
+    std::string client_id = workload.value("clientId", "");
+
+    // Create task directory with client ID to prevent conflicts
+    std::string task_dir = create_task_directory(task_id, client_id);
     if (task_dir.empty()) {
         std::cerr << "[BinaryExecutor] Failed to create task directory for " << task_id << std::endl;
         return;
@@ -327,12 +330,19 @@ std::string BinaryExecutor::get_binary_path(const std::string& program_name, con
     return program_name;
 }
 
-std::string BinaryExecutor::create_task_directory(const std::string& task_id) {
-    std::string task_dir = base_cache_dir_ + "/" + task_id;
+std::string BinaryExecutor::create_task_directory(const std::string& task_id, const std::string& client_id) {
+    // Create unique directory name using task_id + client_id to prevent conflicts
+    std::string unique_id = task_id;
+    if (!client_id.empty()) {
+        unique_id = task_id + "_" + client_id;
+    }
+
+    std::string task_dir = base_cache_dir_ + "/" + unique_id;
 
     try {
         std::filesystem::create_directories(task_dir);
-        task_artifacts_[task_id] = task_dir;
+        task_artifacts_[task_id] = task_dir; // Still use task_id as key for cleanup
+        std::cout << "[BinaryExecutor] Created task directory: " << task_dir << " (task_id: " << task_id << ", client_id: " << client_id << ")" << std::endl;
         return task_dir;
     } catch (const std::exception& e) {
         std::cerr << "[BinaryExecutor] Failed to create task directory " << task_dir << ": " << e.what() << std::endl;

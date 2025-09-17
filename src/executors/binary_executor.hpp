@@ -24,7 +24,7 @@ private:
     std::unordered_map<std::string, std::string> task_artifacts_; // task_id -> temp_dir
     std::string base_cache_dir_;
 
-    std::string create_task_directory(const std::string& task_id);
+    std::string create_task_directory(const std::string& task_id, const std::string& client_id = "");
     void write_artifact(const std::string& task_id, const json& artifact);
     void make_executable(const std::string& file_path);
 };
