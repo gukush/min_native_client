@@ -98,7 +98,7 @@ static bool check_extension_support(VkPhysicalDevice device, const char* extensi
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, nullptr);
     std::vector<VkExtensionProperties> extensions(extension_count);
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, extensions.data());
-    
+
     for (const auto& ext : extensions) {
         if (strcmp(ext.extensionName, extension_name) == 0) {
             return true;
@@ -118,12 +118,12 @@ static bool ensure_context() {
         VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         ai.pApplicationName = "native-client";
         ai.apiVersion = VK_API_VERSION_1_1;
-        
+
         // Enable instance extensions for compute performance
         const char* instance_extensions[] = {
             VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
         };
-        
+
         VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         ci.pApplicationInfo = &ai;
         ci.enabledExtensionCount = 1;
@@ -172,7 +172,7 @@ static bool ensure_context() {
             VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME,
             VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME
         };
-        
+
         for (const char* ext : candidate_extensions) {
             if (check_extension_support(g_ctx->phys, ext)) {
                 enabled_extensions.push_back(ext);
@@ -252,7 +252,8 @@ bool VulkanExecutor::compile_glsl_to_spirv(const std::string& glsl, std::vector<
     try {
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
-        options.SetOptimizationLevel(shaderc::OptimizationLevel::Performance);
+        // Note: Optimization level setting may vary by shaderc version
+        // options.SetOptimizationLevel(shaderc_optimization_level_performance);
 
         auto result = compiler.CompileGlslToSpv(glsl, shaderc_compute_shader, "shader.comp", options);
 
