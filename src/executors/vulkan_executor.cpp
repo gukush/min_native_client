@@ -92,6 +92,21 @@ struct VkCtx {
 static std::mutex g_ctx_mtx;
 static std::unique_ptr<VkCtx> g_ctx;
 
+// Helper function to check if device supports an extension
+static bool check_extension_support(VkPhysicalDevice device, const char* extension_name) {
+    uint32_t extension_count = 0;
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> extensions(extension_count);
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, extensions.data());
+    
+    for (const auto& ext : extensions) {
+        if (strcmp(ext.extensionName, extension_name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool ensure_context() {
     std::lock_guard<std::mutex> lk(g_ctx_mtx);
     if (g_ctx && g_ctx->dev) return true;
@@ -103,8 +118,16 @@ static bool ensure_context() {
         VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         ai.pApplicationName = "native-client";
         ai.apiVersion = VK_API_VERSION_1_1;
+        
+        // Enable instance extensions for compute performance
+        const char* instance_extensions[] = {
+            VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
+        };
+        
         VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         ci.pApplicationInfo = &ai;
+        ci.enabledExtensionCount = 1;
+        ci.ppEnabledExtensionNames = instance_extensions;
         if (vkCreateInstance(&ci, nullptr, &g_ctx->inst) != VK_SUCCESS) {
             std::cerr << "[Vulkan] vkCreateInstance failed\n";
             return false;
@@ -139,9 +162,31 @@ static bool ensure_context() {
         qci.queueCount = 1;
         qci.pQueuePriorities = &prio;
 
+        // Check and enable device extensions for compute and matmul acceleration
+        std::vector<const char*> enabled_extensions;
+        const char* candidate_extensions[] = {
+            VK_KHR_8BIT_STORAGE_EXTENSION_NAME,
+            VK_KHR_16BIT_STORAGE_EXTENSION_NAME,
+            VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME,
+            VK_KHR_VARIABLE_POINTERS_EXTENSION_NAME,
+            VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME,
+            VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME
+        };
+        
+        for (const char* ext : candidate_extensions) {
+            if (check_extension_support(g_ctx->phys, ext)) {
+                enabled_extensions.push_back(ext);
+                std::cout << "[Vulkan] Enabling extension: " << ext << std::endl;
+            } else {
+                std::cout << "[Vulkan] Extension not supported: " << ext << std::endl;
+            }
+        }
+
         VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
+        dci.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size());
+        dci.ppEnabledExtensionNames = enabled_extensions.empty() ? nullptr : enabled_extensions.data();
         if (vkCreateDevice(g_ctx->phys, &dci, nullptr, &g_ctx->dev) != VK_SUCCESS) {
             std::cerr << "[Vulkan] vkCreateDevice failed\n";
             return false;
@@ -207,6 +252,7 @@ bool VulkanExecutor::compile_glsl_to_spirv(const std::string& glsl, std::vector<
     try {
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
+        options.SetOptimizationLevel(shaderc::OptimizationLevel::Performance);
 
         auto result = compiler.CompileGlslToSpv(glsl, shaderc_compute_shader, "shader.comp", options);
 
