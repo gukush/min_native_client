@@ -252,6 +252,14 @@ bool VulkanExecutor::compile_glsl_to_spirv(const std::string& glsl, std::vector<
     try {
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
+        
+        // Enable necessary extensions for cooperative matrices and float16
+        options.AddMacroDefinition("GL_KHR_cooperative_matrix", "1");
+        options.AddMacroDefinition("GL_KHR_memory_scope_semantics", "1");
+        options.AddMacroDefinition("GL_EXT_shader_explicit_arithmetic_types_float16", "1");
+        options.AddMacroDefinition("GL_EXT_shader_integer_dot_product", "1");
+        options.AddMacroDefinition("GL_AMD_gpu_shader_half_float", "1");
+        
         // Note: Optimization level setting may vary by shaderc version
         // options.SetOptimizationLevel(shaderc_optimization_level_performance);
 
