@@ -322,7 +322,14 @@ ExecResult VulkanExecutor::run_task(const json& task) {
     std::vector<std::vector<uint8_t>> inputs;
     if (task.contains("inputs") && task["inputs"].is_array()) {
         inputs.reserve(task["inputs"].size());
-        for (const auto& in : task["inputs"]) inputs.emplace_back(b64dec(in.value("data","")));
+        for (const auto& in : task["inputs"]) {
+            // Try both "data" and "b64" fields for compatibility
+            std::string data_str = in.value("data", "");
+            if (data_str.empty()) {
+                data_str = in.value("b64", "");
+            }
+            inputs.emplace_back(b64dec(data_str));
+        }
     }
 
     std::vector<size_t> outputSizes;
@@ -464,6 +471,11 @@ ExecResult VulkanExecutor::run_task(const json& task) {
     in_mem.resize(numIn);
     for (uint32_t i=0;i<numIn;++i) {
         const auto& h = inputs[i];
+        std::cout << "[Vulkan] Input buffer " << i << " size: " << h.size() << std::endl;
+        if (h.size() == 0) {
+            r.error = "input buffer size is zero";
+            return r;
+        }
         if (!::create_buffer(C.dev, C.phys, h.size(),
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
